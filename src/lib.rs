@@ -8,6 +8,13 @@ use core::sync::atomic::AtomicU8;
 use core::sync::atomic::Ordering;
 use core::task::Waker;
 
+/// The linkage in a doubly-linked list. Used as the list container
+/// (pointing to head and tail), each node (pointing to prev and
+/// next), and used as a singly-linked waker list (no prev).
+///
+/// The default, when it's still movable, is two null pointers. When
+/// pinned, it can transition to self-referential, where both `next`
+/// and `prev` point to self.
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 struct Pointers {
@@ -25,11 +32,14 @@ impl Default for Pointers {
 }
 
 impl Pointers {
+    /// Now that we know this node is pinned, if the pointers are
+    /// null, point to ourselves.
     fn knot(mut self: Pin<&mut Self>) {
         if self.next.is_null() {
             assert!(self.prev.is_null(), "either both are null or neither are");
-            self.next = Pin::into_inner(self.as_mut()) as *mut Pointers;
-            self.prev = Pin::into_inner(self.as_mut()) as *mut Pointers;
+            let selfp = Pin::into_inner(self.as_mut()) as *mut Pointers;
+            self.next = selfp;
+            self.prev = selfp;
         }
     }
 
@@ -208,7 +218,6 @@ mod tests {
     use super::*;
     use core::pin::pin;
     use core::sync::atomic::AtomicU64;
-    use core::sync::atomic::Ordering;
     extern crate std;
     use std::sync::Arc;
 
@@ -264,12 +273,25 @@ mod tests {
 
         assert_eq!(1, task.wake_count());
     }
+
+    #[test]
+    fn link_and_notify_all_two_tasks() {
+        let task = Task::new();
+
+        let mut set = pin!(WakerSet::new());
+        let slot1 = pin!(WakerSlot::new());
+        let slot2 = pin!(WakerSlot::new());
+        set.as_mut().link(slot1, task.waker());
+        set.as_mut().link(slot2, task.waker());
+        set.extract_wakers().notify_all();
+
+        assert_eq!(2, task.wake_count());
+    }
 }
 
 #[cfg(all(test, target_pointer_width = "64"))]
 mod tests64 {
     use super::*;
-    use core::mem;
 
     #[test]
     fn test_sizes() {
