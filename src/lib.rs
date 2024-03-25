@@ -43,41 +43,46 @@ impl Pointers {
         }
     }
 
+    /// Link a value to the back of the list. The value must be
+    /// unlinked.
     unsafe fn link_back(mut self: Pin<&mut Self>, value: Pin<&mut Pointers>) {
         self.as_mut().knot();
         // SAFETY: both pointers are pinned
         unsafe {
             let list = self.get_unchecked_mut() as *mut Pointers;
             let elem = value.get_unchecked_mut() as *mut Pointers;
-            //eprintln!("list: {:?} {:?}", list, *list);
-            //eprintln!("elem: {:?} {:?}", elem, *elem);
             assert!((*elem).next.is_null());
             assert!((*elem).prev.is_null());
             (*elem).next = list;
             (*elem).prev = (*list).prev;
             (*(*list).prev).next = elem;
             (*list).prev = elem;
-            //eprintln!("list: {:?} {:?}", list, *list);
-            //eprintln!("elem: {:?} {:?}", elem, *elem);
         }
     }
 }
 
+/// An ordered list of [core::task::Waker]s.
+///
+/// Does not allocate: the wakers themselves are stored in
+/// [WakerSlot]. Only two pointers in size.
+
 #[derive(Debug, Default)]
-pub struct WakerSet {
+pub struct WakerList {
     // `next` is head and `prev` is tail. Upon default initialization,
     // the pointers are null and movable. On first pinned use, they
     // are knotted and become self-referential.
     pointers: Pointers,
 }
 
-// TODO: impl Drop for WakerSet
+// TODO: impl Drop for WakerList
 
-impl WakerSet {
+impl WakerList {
+    /// Returns an empty list.
     pub fn new() -> Self {
         Default::default()
     }
 
+    /// Adds a [core::task::Waker] to the list, storing it in [WakerSlot], which is linked into the [WakerList].
     pub fn link(mut self: Pin<&mut Self>, mut slot: Pin<&mut WakerSlot>, waker: Waker) {
         // assert that slot is unlinked?
         unsafe {
@@ -93,7 +98,7 @@ impl WakerSet {
         }
     }
 
-    pub fn extract_wakers(mut self: Pin<&mut Self>) -> WakerList {
+    pub fn extract_wakers(mut self: Pin<&mut Self>) -> UnlockedWakerList {
         // TODO: self.knot()
         // SAFETY: self is pinned
         let head = unsafe {
@@ -120,10 +125,10 @@ impl WakerSet {
                 head
             }
         };
-        // If WakerSet is protected by a lock, it is held. Mark every
+        // If WakerList is protected by a lock, it is held. Mark every
         // slot as PENDING_WAKE.
         // TODO: actually mark slots as reserved
-        WakerList { head }
+        UnlockedWakerList { head }
     }
 
     fn pointers(self: Pin<&mut Self>) -> Pin<&mut Pointers> {
@@ -132,15 +137,18 @@ impl WakerSet {
     }
 }
 
+/// List of [core::task::Waker] extracted from [WakerList] so that
+/// [core::task::Waker::wake] can be called outside of any mutex
+/// protecting [WakerList].
 #[derive(Debug)]
-pub struct WakerList {
+pub struct UnlockedWakerList {
     // `prev` is not used. null denotes the end.
     head: *mut Pointers,
 }
 
-impl Default for WakerList {
+impl Default for UnlockedWakerList {
     fn default() -> Self {
-        WakerList {
+        Self {
             head: ptr::null_mut(),
         }
     }
@@ -148,7 +156,7 @@ impl Default for WakerList {
 
 // TODO: impl Drop for WakerList
 
-impl WakerList {
+impl UnlockedWakerList {
     // TODO: must release the lock before invoking wakers
     pub fn notify_all(mut self) {
         let mut p = mem::replace(&mut self.head, ptr::null_mut());
@@ -195,6 +203,7 @@ impl Default for Slot {
     }
 }
 
+/// A [core::future::Future]'s waker registration slot.
 #[derive(Debug, Default)]
 pub struct WakerSlot {
     slot: Slot,
@@ -249,8 +258,8 @@ mod tests {
 
     #[test]
     fn new_and_drop() {
-        let set = WakerSet::new();
-        drop(set);
+        let list = WakerList::new();
+        drop(list);
     }
 
     #[test]
@@ -266,10 +275,10 @@ mod tests {
     fn link_and_notify_all() {
         let task = Task::new();
 
-        let mut set = pin!(WakerSet::new());
+        let mut list = pin!(WakerList::new());
         let slot = pin!(WakerSlot::new());
-        set.as_mut().link(slot, task.waker());
-        set.extract_wakers().notify_all();
+        list.as_mut().link(slot, task.waker());
+        list.extract_wakers().notify_all();
 
         assert_eq!(1, task.wake_count());
     }
@@ -278,12 +287,12 @@ mod tests {
     fn link_and_notify_all_two_tasks() {
         let task = Task::new();
 
-        let mut set = pin!(WakerSet::new());
+        let mut list = pin!(WakerList::new());
         let slot1 = pin!(WakerSlot::new());
         let slot2 = pin!(WakerSlot::new());
-        set.as_mut().link(slot1, task.waker());
-        set.as_mut().link(slot2, task.waker());
-        set.extract_wakers().notify_all();
+        list.as_mut().link(slot1, task.waker());
+        list.as_mut().link(slot2, task.waker());
+        list.extract_wakers().notify_all();
 
         assert_eq!(2, task.wake_count());
     }
@@ -295,7 +304,7 @@ mod tests64 {
 
     #[test]
     fn test_sizes() {
-        assert_eq!(16, mem::size_of::<WakerSet>());
+        assert_eq!(16, mem::size_of::<WakerList>());
         // TODO: Can we make this fit in 32?
         assert_eq!(40, mem::size_of::<WakerSlot>());
     }
