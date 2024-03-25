@@ -1,8 +1,8 @@
-//#![no_std]
+#![no_std]
 
 use core::mem;
-use core::pin::Pin;
 use core::mem::MaybeUninit;
+use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::Ordering;
@@ -14,8 +14,6 @@ struct Pointers {
     next: *mut Pointers,
     prev: *mut Pointers,
 }
-
-// TODO: Option<(NonNull<Pointers>, NonNull<Pointers>)>
 
 impl Default for Pointers {
     fn default() -> Self {
@@ -41,16 +39,16 @@ impl Pointers {
         unsafe {
             let list = self.get_unchecked_mut() as *mut Pointers;
             let elem = value.get_unchecked_mut() as *mut Pointers;
-            eprintln!("list: {:?} {:?}", list, *list);
-            eprintln!("elem: {:?} {:?}", elem, *elem);
+            //eprintln!("list: {:?} {:?}", list, *list);
+            //eprintln!("elem: {:?} {:?}", elem, *elem);
             assert!((*elem).next.is_null());
             assert!((*elem).prev.is_null());
             (*elem).next = list;
             (*elem).prev = (*list).prev;
             (*(*list).prev).next = elem;
             (*list).prev = elem;
-            eprintln!("list: {:?} {:?}", list, *list);
-            eprintln!("elem: {:?} {:?}", elem, *elem);
+            //eprintln!("list: {:?} {:?}", list, *list);
+            //eprintln!("elem: {:?} {:?}", elem, *elem);
         }
     }
 }
@@ -76,10 +74,13 @@ impl WakerSet {
             self.as_mut().pointers().link_back(slot.as_mut().pointers());
 
             // TODO: CAS
-            slot.as_mut().get_mut().slot.state.store(SLOT_FULL, Ordering::Release);
+            slot.as_mut()
+                .get_mut()
+                .slot
+                .state
+                .store(SLOT_FULL, Ordering::Release);
             slot.get_mut().slot.waker.write(waker);
         }
-        
     }
 
     pub fn extract_wakers(mut self: Pin<&mut Self>) -> WakerList {
@@ -87,8 +88,8 @@ impl WakerSet {
         // SAFETY: self is pinned
         let head = unsafe {
             let selfp = self.as_mut().pointers().get_unchecked_mut() as *mut Pointers;
-            eprintln!("extract_wakers");
-            eprintln!("list: {:?} {:?}", selfp, *selfp);
+            //eprintln!("extract_wakers");
+            //eprintln!("list: {:?} {:?}", selfp, *selfp);
             //eprintln!("elem: {:?} {:?}", elem, *elem);
             let next = (*selfp).next;
             let prev = (*selfp).prev;
@@ -139,7 +140,7 @@ impl Default for WakerList {
 
 impl WakerList {
     // TODO: must release the lock before invoking wakers
-    fn notify_all(mut self) {
+    pub fn notify_all(mut self) {
         let mut p = mem::replace(&mut self.head, ptr::null_mut());
         while !p.is_null() {
             let next = unsafe {
@@ -161,7 +162,7 @@ impl WakerList {
 
 const SLOT_EMPTY: u8 = 0;
 const SLOT_FULL: u8 = 1;
-const SLOT_PENDING_WAKE: u8 = 2;
+//const SLOT_PENDING_WAKE: u8 = 2;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -170,6 +171,9 @@ struct Slot {
     state: AtomicU8,
     waker: MaybeUninit<Waker>,
 }
+
+// assert_eq!(0, mem::offset_of!(Slot, pointers));
+const _: [(); 0] = [(); mem::offset_of!(Slot, pointers)];
 
 impl Default for Slot {
     fn default() -> Self {
@@ -189,11 +193,11 @@ pub struct WakerSlot {
 // TODO: impl Drop for WakerSlot
 
 impl WakerSlot {
-    fn new() -> WakerSlot {
+    pub fn new() -> WakerSlot {
         Default::default()
     }
 
-    fn pointers(mut self: Pin<&mut Self>) -> Pin<&mut Pointers> {
+    fn pointers(self: Pin<&mut Self>) -> Pin<&mut Pointers> {
         // SAFETY: pointers is pinned when self is
         unsafe { self.map_unchecked_mut(|s| &mut s.slot.pointers) }
     }
