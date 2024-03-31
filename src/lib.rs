@@ -43,6 +43,23 @@ impl Pointers {
         }
     }
 
+    /// Returns whether next is non-null.
+    fn is_linked(&self) -> bool {
+        !self.next.is_null()
+    }
+
+    fn unlink(mut self: Pin<&mut Self>) -> bool {
+        unsafe {
+            let elem = self.get_unchecked_mut() as *mut Pointers;
+            let next = (*elem).next;
+            let prev = (*elem).prev;
+            (*prev).next = next;
+            (*next).prev = prev;
+            (*elem).next = ptr::null_mut();
+            (*elem).prev = ptr::null_mut();
+        }
+    }
+
     /// Link a value to the back of the list. The value must be
     /// unlinked.
     unsafe fn link_back(mut self: Pin<&mut Self>, value: Pin<&mut Pointers>) {
@@ -95,6 +112,14 @@ impl WakerList {
                 .state
                 .store(SLOT_FULL, Ordering::Release);
             slot.get_mut().slot.waker.write(waker);
+        }
+    }
+
+    /// Unlinks a slot from the list, dropping its [core::task::Waker].
+    pub fn unlink(mut self: Pin<&mut Self>, mut slot: Pin<&mut WakerSlot>) {
+        // assert that slot is linked?
+        unsafe {
+            slot.pointers().unlink();
         }
     }
 
@@ -212,8 +237,15 @@ pub struct WakerSlot {
 // TODO: impl Drop for WakerSlot
 
 impl WakerSlot {
+    /// Returns an empty slot.
     pub fn new() -> WakerSlot {
         Default::default()
+    }
+
+    /// Returns whether this slot is linked into the [WakerList] (and
+    /// therefore has a waker).
+    pub fn is_linked(&self) -> bool {
+        self.slot.pointers.is_linked()
     }
 
     fn pointers(self: Pin<&mut Self>) -> Pin<&mut Pointers> {
@@ -295,6 +327,19 @@ mod tests {
         list.extract_wakers().notify_all();
 
         assert_eq!(2, task.wake_count());
+    }
+
+    #[test]
+    fn unlink() {
+        let task = Task::new();
+
+        let mut list = pin!(WakerList::new());
+        let slot1 = pin!(WakerSlot::new());
+        assert!(!slot1.is_linked());
+        list.as_mut().link(slot1, task.waker());
+        assert!(slot1.is_linked());
+        list.as_mut().unlink(slot1);
+        assert!(!slot1.is_linked());
     }
 }
 
