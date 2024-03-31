@@ -48,11 +48,17 @@ impl Pointers {
         !self.next.is_null()
     }
 
-    fn unlink(mut self: Pin<&mut Self>) -> bool {
+    /// Unlink this node from its neighbors.
+    // TODO: Is this function safe or not?
+    fn unlink(self: Pin<&mut Self>) {
+        // SAFETY: self is pinned, and we assume that next and prev
+        // are valid and locked
         unsafe {
             let elem = self.get_unchecked_mut() as *mut Pointers;
             let next = (*elem).next;
             let prev = (*elem).prev;
+            assert!(!next.is_null());
+            assert!(!prev.is_null());
             (*prev).next = next;
             (*next).prev = prev;
             (*elem).next = ptr::null_mut();
@@ -116,11 +122,8 @@ impl WakerList {
     }
 
     /// Unlinks a slot from the list, dropping its [core::task::Waker].
-    pub fn unlink(mut self: Pin<&mut Self>, mut slot: Pin<&mut WakerSlot>) {
-        // assert that slot is linked?
-        unsafe {
-            slot.pointers().unlink();
-        }
+    pub fn unlink(self: Pin<&mut Self>, slot: Pin<&mut WakerSlot>) {
+        slot.pointers().unlink();
     }
 
     pub fn extract_wakers(mut self: Pin<&mut Self>) -> UnlockedWakerList {
@@ -334,11 +337,11 @@ mod tests {
         let task = Task::new();
 
         let mut list = pin!(WakerList::new());
-        let slot1 = pin!(WakerSlot::new());
+        let mut slot1 = pin!(WakerSlot::new());
         assert!(!slot1.is_linked());
-        list.as_mut().link(slot1, task.waker());
+        list.as_mut().link(slot1.as_mut(), task.waker());
         assert!(slot1.is_linked());
-        list.as_mut().unlink(slot1);
+        list.as_mut().unlink(slot1.as_mut());
         assert!(!slot1.is_linked());
     }
 }
