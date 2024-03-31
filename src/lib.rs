@@ -122,8 +122,10 @@ impl WakerList {
     }
 
     /// Unlinks a slot from the list, dropping its [core::task::Waker].
-    pub fn unlink(self: Pin<&mut Self>, slot: Pin<&mut WakerSlot>) {
-        slot.pointers().unlink();
+    pub fn unlink(self: Pin<&mut Self>, mut slot: Pin<&mut WakerSlot>) {
+        slot.as_mut().pointers().unlink();
+        // TODO: update `state`
+        unsafe { slot.as_mut().slot.waker.assume_init_drop() }
     }
 
     pub fn extract_wakers(mut self: Pin<&mut Self>) -> UnlockedWakerList {
