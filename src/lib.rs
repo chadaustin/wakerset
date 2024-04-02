@@ -114,10 +114,9 @@ impl WakerList {
             // TODO: CAS
             slot.as_mut()
                 .get_mut()
-                .slot
                 .state
                 .store(SLOT_FULL, Ordering::Release);
-            slot.get_mut().slot.waker.write(waker);
+            slot.get_mut().waker.write(waker);
         }
     }
 
@@ -125,7 +124,7 @@ impl WakerList {
     pub fn unlink(self: Pin<&mut Self>, mut slot: Pin<&mut WakerSlot>) {
         slot.as_mut().pointers().unlink();
         // TODO: update `state`
-        unsafe { slot.as_mut().slot.waker.assume_init_drop() }
+        unsafe { slot.as_mut().waker.assume_init_drop() }
     }
 
     pub fn extract_wakers(mut self: Pin<&mut Self>) -> UnlockedWakerList {
@@ -195,7 +194,7 @@ impl UnlockedWakerList {
                 (*p).prev = ptr::null_mut();
                 next
             };
-            let slotp = p as *mut Slot;
+            let slotp = p as *mut WakerSlot;
             // extract waker
             let waker = unsafe { (*slotp).waker.assume_init_read() };
             // TODO: set as empty again
@@ -209,18 +208,19 @@ const SLOT_EMPTY: u8 = 0;
 const SLOT_FULL: u8 = 1;
 //const SLOT_PENDING_WAKE: u8 = 2;
 
+/// A [core::future::Future]'s waker registration slot.
 #[repr(C)]
 #[derive(Debug)]
-struct Slot {
+pub struct WakerSlot {
     pointers: Pointers,
     state: AtomicU8,
     waker: MaybeUninit<Waker>,
 }
 
-// assert_eq!(0, mem::offset_of!(Slot, pointers));
-const _: [(); 0] = [(); mem::offset_of!(Slot, pointers)];
+// assert_eq!(0, mem::offset_of!(WakerSlot, pointers));
+const _: [(); 0] = [(); mem::offset_of!(WakerSlot, pointers)];
 
-impl Default for Slot {
+impl Default for WakerSlot {
     fn default() -> Self {
         Self {
             pointers: Pointers::default(),
@@ -228,12 +228,6 @@ impl Default for Slot {
             waker: MaybeUninit::uninit(),
         }
     }
-}
-
-/// A [core::future::Future]'s waker registration slot.
-#[derive(Debug, Default)]
-pub struct WakerSlot {
-    slot: Slot,
 }
 
 // TODO: impl Drop for WakerSlot
@@ -247,12 +241,12 @@ impl WakerSlot {
     /// Returns whether this slot is linked into the [WakerList] (and
     /// therefore has a waker).
     pub fn is_linked(&self) -> bool {
-        self.slot.pointers.is_linked()
+        self.pointers.is_linked()
     }
 
     fn pointers(self: Pin<&mut Self>) -> Pin<&mut Pointers> {
         // SAFETY: pointers is pinned when self is
-        unsafe { self.map_unchecked_mut(|s| &mut s.slot.pointers) }
+        unsafe { self.map_unchecked_mut(|s| &mut s.pointers) }
     }
 }
 
