@@ -133,9 +133,6 @@ impl WakerList {
         // SAFETY: self is pinned
         let head = unsafe {
             let selfp = self.as_mut().pointers().get_unchecked_mut() as *mut Pointers;
-            //eprintln!("extract_wakers");
-            //eprintln!("list: {:?} {:?}", selfp, *selfp);
-            //eprintln!("elem: {:?} {:?}", elem, *elem);
             let next = (*selfp).next;
             let prev = (*selfp).prev;
 
@@ -345,6 +342,31 @@ mod tests {
         assert!(slot1.is_linked());
         list.as_mut().unlink(slot1.as_mut());
         assert!(!slot1.is_linked());
+
+        list.extract_wakers().notify_all();
+        assert_eq!(0, task.wake_count());
+    }
+
+    #[test]
+    fn unlink_and_relink() {
+        let task = Task::new();
+
+        let mut list = pin!(WakerList::new());
+        let mut slot1 = pin!(WakerSlot::new());
+        assert!(!slot1.is_linked());
+        list.as_mut().link(slot1.as_mut(), task.waker());
+        assert!(slot1.is_linked());
+        list.as_mut().unlink(slot1.as_mut());
+        assert!(!slot1.is_linked());
+
+        list.as_mut().extract_wakers().notify_all();
+        assert_eq!(0, task.wake_count());
+
+        list.as_mut().link(slot1.as_mut(), task.waker());
+        assert!(slot1.is_linked());
+
+        list.extract_wakers().notify_all();
+        assert_eq!(1, task.wake_count());
     }
 }
 
