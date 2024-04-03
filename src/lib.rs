@@ -1,5 +1,6 @@
 #![no_std]
 
+use core::marker::PhantomData;
 use core::mem;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
@@ -211,30 +212,56 @@ const SLOT_FULL: u8 = 1;
 /// A [core::future::Future]'s waker registration slot.
 #[repr(C)]
 #[derive(Debug)]
-pub struct WakerSlot {
+pub struct WakerSlot<'list> {
     pointers: Pointers,
     state: AtomicU8,
     waker: MaybeUninit<Waker>,
+
+    // Any given WakerSlot must live within the scope of a single
+    // WakerList.
+    marker: PhantomData<&'list ()>,
 }
 
 // assert_eq!(0, mem::offset_of!(WakerSlot, pointers));
 const _: [(); 0] = [(); mem::offset_of!(WakerSlot, pointers)];
 
-impl Default for WakerSlot {
+impl Default for WakerSlot<'_> {
     fn default() -> Self {
         Self {
             pointers: Pointers::default(),
             state: AtomicU8::new(SLOT_EMPTY),
             waker: MaybeUninit::uninit(),
+            marker: PhantomData,
         }
     }
 }
 
-// TODO: impl Drop for WakerSlot
+#[allow(non_snake_case)]
+#[inline(never)]
+#[cold]
+extern "C" fn MUST_UNLINK_WakerSlot_BEFORE_DROP() -> ! {
+    // panic! from extern "C" is an abort with an error message.
+    panic!("Must unlink WakerSlot before drop")
+    // Another option, at the cost of a tiny, stable, dependency, is
+    // the `abort` crate.
+    //abort::abort()
+}
 
-impl WakerSlot {
+impl Drop for WakerSlot<'_> {
+    fn drop(&mut self) {
+        if self.pointers.is_linked() {
+            // It is undefined behavior to drop a linked WakerSlot
+            // while linked and the WakerList's mutex is not held, so
+            // all we can do is abort. panic! could be caught and
+            // therefore UB observed.
+            MUST_UNLINK_WakerSlot_BEFORE_DROP()
+        }
+    }
+}
+
+impl<'list> WakerSlot<'list> {
     /// Returns an empty slot.
-    pub fn new() -> WakerSlot {
+    pub fn new() -> WakerSlot<'list> {
         Default::default()
     }
 
@@ -361,6 +388,23 @@ mod tests {
 
         list.extract_wakers().notify_all();
         assert_eq!(1, task.wake_count());
+    }
+
+    #[test]
+    fn unlink_slot_drops_waker() {
+        let task = Task::new();
+        let mut list = pin!(WakerList::new());
+        let mut slot1 = pin!(WakerSlot::new());
+        let mut slot2 = pin!(WakerSlot::new());
+        list.as_mut().link(slot1.as_mut(), task.waker());
+        list.as_mut().link(slot2.as_mut(), task.waker());
+        // Comment out the following two lines to observe the
+        // compile-time error message.
+        list.as_mut().unlink(slot1.as_mut());
+        list.as_mut().unlink(slot2.as_mut());
+        // Uncomment the following line to assure the list must
+        // outlive slots.
+        //drop(list);
     }
 }
 
