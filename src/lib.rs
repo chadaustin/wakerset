@@ -1,6 +1,6 @@
 #![no_std]
 
-use core::marker::PhantomData;
+use core::marker::PhantomPinned;
 use core::mem;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
@@ -96,7 +96,10 @@ pub struct WakerList {
     // the pointers are null and movable. On first pinned use, they
     // are knotted and become self-referential.
     pointers: Pointers,
+    _pinned: PhantomPinned,
 }
+
+unsafe impl Send for WakerList {}
 
 // TODO: impl Drop for WakerList
 
@@ -112,20 +115,23 @@ impl WakerList {
         unsafe {
             self.as_mut().pointers().link_back(slot.as_mut().pointers());
 
+            let slot = slot.get_unchecked_mut();
             // TODO: CAS
-            slot.as_mut()
-                .get_mut()
-                .state
-                .store(SLOT_FULL, Ordering::Release);
-            slot.get_mut().waker.write(waker);
+            slot.state.store(SLOT_FULL, Ordering::Release);
+            slot.waker.write(waker);
         }
     }
 
     /// Unlinks a slot from the list, dropping its [core::task::Waker].
     pub fn unlink(self: Pin<&mut Self>, mut slot: Pin<&mut WakerSlot>) {
-        slot.as_mut().pointers().unlink();
-        // TODO: update `state`
-        unsafe { slot.as_mut().waker.assume_init_drop() }
+        // TODO: Do we need to assert that this is the same list we
+        // were linked to?
+        // SAFETY: TODO ...
+        unsafe {
+            slot.as_mut().pointers().unlink();
+            // TODO: update `state`
+            slot.get_unchecked_mut().waker.assume_init_drop()
+        }
     }
 
     pub fn extract_wakers(mut self: Pin<&mut Self>) -> UnlockedWakerList {
@@ -212,26 +218,25 @@ const SLOT_FULL: u8 = 1;
 /// A [core::future::Future]'s waker registration slot.
 #[repr(C)]
 #[derive(Debug)]
-pub struct WakerSlot<'list> {
+pub struct WakerSlot {
     pointers: Pointers,
     state: AtomicU8,
     waker: MaybeUninit<Waker>,
-
-    // Any given WakerSlot must live within the scope of a single
-    // WakerList.
-    marker: PhantomData<&'list ()>,
+    pinned: PhantomPinned,
 }
+
+unsafe impl Send for WakerSlot {}
 
 // assert_eq!(0, mem::offset_of!(WakerSlot, pointers));
 const _: [(); 0] = [(); mem::offset_of!(WakerSlot, pointers)];
 
-impl Default for WakerSlot<'_> {
+impl Default for WakerSlot {
     fn default() -> Self {
         Self {
             pointers: Pointers::default(),
             state: AtomicU8::new(SLOT_EMPTY),
             waker: MaybeUninit::uninit(),
-            marker: PhantomData,
+            pinned: PhantomPinned,
         }
     }
 }
@@ -247,7 +252,7 @@ extern "C" fn MUST_UNLINK_WakerSlot_BEFORE_DROP() -> ! {
     //abort::abort()
 }
 
-impl Drop for WakerSlot<'_> {
+impl Drop for WakerSlot {
     fn drop(&mut self) {
         if self.pointers.is_linked() {
             // It is undefined behavior to drop a linked WakerSlot
@@ -259,9 +264,9 @@ impl Drop for WakerSlot<'_> {
     }
 }
 
-impl<'list> WakerSlot<'list> {
+impl WakerSlot {
     /// Returns an empty slot.
-    pub fn new() -> WakerSlot<'list> {
+    pub fn new() -> WakerSlot {
         Default::default()
     }
 
@@ -309,6 +314,16 @@ mod tests {
         fn wake(self: Arc<Self>) {
             self.wake_count.fetch_add(1, Ordering::AcqRel);
         }
+    }
+
+    #[test]
+    fn marker_traits() {
+        use static_assertions::assert_impl_all;
+        use static_assertions::assert_not_impl_any;
+        assert_impl_all!(WakerList: Send);
+        assert_impl_all!(WakerSlot: Send);
+        assert_not_impl_any!(WakerList: Sync, Unpin);
+        assert_not_impl_any!(WakerSlot: Sync, Unpin);
     }
 
     #[test]
