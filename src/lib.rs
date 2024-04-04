@@ -112,10 +112,12 @@ impl WakerList {
     /// Adds a [core::task::Waker] to the list, storing it in [WakerSlot], which is linked into the [WakerList].
     pub fn link(mut self: Pin<&mut Self>, mut slot: Pin<&mut WakerSlot>, waker: Waker) {
         // assert that slot is unlinked?
+        // SAFETY: TODO ...
         unsafe {
             self.as_mut().pointers().link_back(slot.as_mut().pointers());
 
             let slot = slot.get_unchecked_mut();
+            slot.list = self.get_unchecked_mut() as *mut _;
             // TODO: CAS
             slot.state.store(SLOT_FULL, Ordering::Release);
             slot.waker.write(waker);
@@ -124,13 +126,15 @@ impl WakerList {
 
     /// Unlinks a slot from the list, dropping its [core::task::Waker].
     pub fn unlink(self: Pin<&mut Self>, mut slot: Pin<&mut WakerSlot>) {
-        // TODO: Do we need to assert that this is the same list we
-        // were linked to?
         // SAFETY: TODO ...
         unsafe {
+            let list = self.get_unchecked_mut() as *mut _;
+            assert_eq!(list, slot.list, "slot must be unlinked from same list");
             slot.as_mut().pointers().unlink();
+            let slot = slot.get_unchecked_mut();
+            slot.list = ptr::null_mut();
             // TODO: update `state`
-            slot.get_unchecked_mut().waker.assume_init_drop()
+            slot.waker.assume_init_drop()
         }
     }
 
@@ -220,6 +224,8 @@ const SLOT_FULL: u8 = 1;
 #[derive(Debug)]
 pub struct WakerSlot {
     pointers: Pointers,
+    // Null when unlinked. Points to the owning list when linked.
+    list: *mut WakerList,
     state: AtomicU8,
     waker: MaybeUninit<Waker>,
     pinned: PhantomPinned,
@@ -234,6 +240,7 @@ impl Default for WakerSlot {
     fn default() -> Self {
         Self {
             pointers: Pointers::default(),
+            list: ptr::null_mut(),
             state: AtomicU8::new(SLOT_EMPTY),
             waker: MaybeUninit::uninit(),
             pinned: PhantomPinned,
@@ -288,6 +295,7 @@ mod tests {
     use core::pin::pin;
     use core::sync::atomic::AtomicU64;
     extern crate std;
+    use std::boxed::Box;
     use std::sync::Arc;
 
     struct Task {
@@ -421,6 +429,21 @@ mod tests {
         // outlive slots.
         //drop(list);
     }
+
+    #[test]
+    fn unlink_wrong_list_panics() {
+        let task = Task::new();
+
+        let mut list1 = Box::pin(WakerList::new());
+        let mut list2 = Box::pin(WakerList::new());
+        let mut slot = Box::pin(WakerSlot::new());
+        list1.as_mut().link(slot.as_mut(), task.waker());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            list2.as_mut().unlink(slot.as_mut());
+        }));
+        assert!(result.is_err());
+        list1.as_mut().unlink(slot.as_mut());
+    }
 }
 
 #[cfg(all(test, target_pointer_width = "64"))]
@@ -430,7 +453,7 @@ mod tests64 {
     #[test]
     fn test_sizes() {
         assert_eq!(16, mem::size_of::<WakerList>());
-        // TODO: Can we make this fit in 32?
-        assert_eq!(40, mem::size_of::<WakerSlot>());
+        // TODO: Can we make this fit in 40?
+        assert_eq!(48, mem::size_of::<WakerSlot>());
     }
 }
