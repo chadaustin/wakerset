@@ -21,6 +21,7 @@ use core::task::Waker;
 struct Pointers {
     next: *mut Pointers,
     prev: *mut Pointers,
+    pinned: PhantomPinned,
 }
 
 impl Default for Pointers {
@@ -28,6 +29,7 @@ impl Default for Pointers {
         Self {
             next: ptr::null_mut(),
             prev: ptr::null_mut(),
+            pinned: PhantomPinned,
         }
     }
 }
@@ -35,12 +37,18 @@ impl Default for Pointers {
 impl Pointers {
     /// Now that we know this node is pinned, if the pointers are
     /// null, point to ourselves.
-    fn knot(mut self: Pin<&mut Self>) {
-        if self.next.is_null() {
-            assert!(self.prev.is_null(), "either both are null or neither are");
-            let selfp = Pin::into_inner(self.as_mut()) as *mut Pointers;
-            self.next = selfp;
-            self.prev = selfp;
+    fn knot(self: Pin<&mut Self>) {
+        // SAFETY: We are pinned and not moving anything.
+        unsafe {
+            let selfp = self.get_unchecked_mut() as *mut Pointers;
+            if (*selfp).next.is_null() {
+                assert!(
+                    (*selfp).prev.is_null(),
+                    "either both are null or neither are"
+                );
+                (*selfp).next = selfp;
+                (*selfp).prev = selfp;
+            }
         }
     }
 
@@ -96,7 +104,6 @@ pub struct WakerList {
     // the pointers are null and movable. On first pinned use, they
     // are knotted and become self-referential.
     pointers: Pointers,
-    _pinned: PhantomPinned,
 }
 
 unsafe impl Send for WakerList {}
@@ -228,7 +235,6 @@ pub struct WakerSlot {
     list: *mut WakerList,
     state: AtomicU8,
     waker: MaybeUninit<Waker>,
-    pinned: PhantomPinned,
 }
 
 unsafe impl Send for WakerSlot {}
@@ -243,7 +249,6 @@ impl Default for WakerSlot {
             list: ptr::null_mut(),
             state: AtomicU8::new(SLOT_EMPTY),
             waker: MaybeUninit::uninit(),
-            pinned: PhantomPinned,
         }
     }
 }
