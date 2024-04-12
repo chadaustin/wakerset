@@ -1,13 +1,16 @@
 #![no_std]
 
+use core::cell::UnsafeCell;
 use core::marker::PhantomPinned;
 use core::mem;
+use core::mem::offset_of;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::Ordering;
 use core::task::Waker;
+use pinned_aliasable::Aliasable;
 
 /// The linkage in a doubly-linked list. Used as the list container
 /// (pointing to head and tail), each node (pointing to prev and
@@ -118,16 +121,22 @@ impl WakerList {
 
     /// Adds a [core::task::Waker] to the list, storing it in [WakerSlot], which is linked into the [WakerList].
     pub fn link(mut self: Pin<&mut Self>, mut slot: Pin<&mut WakerSlot>, waker: Waker) {
-        // assert that slot is unlinked?
         // SAFETY: TODO ...
         unsafe {
+            // TODO: spinlock until slot.state != SLOT_PENDING_WAKE
+
+            // Panics if this slot is already linked.
+            // TODO: write test coverage.
             self.as_mut().pointers().link_back(slot.as_mut().pointers());
 
             let slot = slot.get_unchecked_mut();
             slot.list = self.get_unchecked_mut() as *mut _;
+
+            // The list lock is held, and we
+
             // TODO: CAS
-            slot.state.store(SLOT_FULL, Ordering::Release);
-            slot.waker.write(waker);
+            slot.state.store(STATE_LINKED, Ordering::Release);
+            slot.waker.write(UnsafeCell::new(waker));
         }
     }
 
@@ -141,7 +150,7 @@ impl WakerList {
             let slot = slot.get_unchecked_mut();
             slot.list = ptr::null_mut();
             // TODO: update `state`
-            slot.waker.assume_init_drop()
+            slot.waker.assume_init_drop();
         }
     }
 
@@ -205,49 +214,57 @@ impl UnlockedWakerList {
     pub fn notify_all(mut self) {
         let mut p = mem::replace(&mut self.head, ptr::null_mut());
         while !p.is_null() {
-            let next = unsafe {
+            unsafe {
                 // TODO: properly unlink
                 let next = (*p).next;
                 (*p).next = ptr::null_mut();
                 (*p).prev = ptr::null_mut();
-                next
-            };
-            let slotp = p as *mut WakerSlot;
-            // extract waker
-            let waker = unsafe { (*slotp).waker.assume_init_read() };
-            // TODO: set as empty again
-            waker.wake();
-            p = next;
+
+                let slot = p
+                    .byte_sub(offset_of!(WakerSlot, pointers))
+                    .cast::<WakerSlot>();
+                let w = Pin::new_unchecked(&(*slot).waker);
+                // extract waker
+                let waker = w.assume_init_read();
+                // TODO: set as empty again
+                waker.into_inner().wake();
+                p = next;
+            }
         }
     }
 }
 
-const SLOT_EMPTY: u8 = 0;
-const SLOT_FULL: u8 = 1;
-//const SLOT_PENDING_WAKE: u8 = 2;
+const STATE_EMPTY: u8 = 0;
+const STATE_LINKED: u8 = 1;
+const STATE_PENDING_WAKE: u8 = 2;
 
 /// A [core::future::Future]'s waker registration slot.
-#[repr(C)]
 #[derive(Debug)]
 pub struct WakerSlot {
-    pointers: Pointers,
-    // Null when unlinked. Points to the owning list when linked.
-    list: *mut WakerList,
+    // Invariants follow:
     state: AtomicU8,
-    waker: MaybeUninit<Waker>,
+    /// When linked, points to the owning list. Will not invalidate
+    /// because WakerList Drop explodes if non-empty.
+    /// Must only be modified under the WakerList lock.
+    list: *mut WakerList,
+    /// Null pointers or linked into WakerList.
+    /// Transitions to linked under the WakerList lock.
+    /// Transitions to unlinked on STATE_PENDING_WAKE -> STATE_EMPTY.
+    pointers: Pointers,
+    // Aliasable = writes safe outside of stacked borrows model
+    // MaybeUninit = only set iff state != SLOT_EMPTY
+    // UnsafeCell = may be mutated through shared references
+    waker: MaybeUninit<UnsafeCell<Waker>>,
 }
 
 unsafe impl Send for WakerSlot {}
 
-// assert_eq!(0, mem::offset_of!(WakerSlot, pointers));
-const _: [(); 0] = [(); mem::offset_of!(WakerSlot, pointers)];
-
 impl Default for WakerSlot {
     fn default() -> Self {
         Self {
-            pointers: Pointers::default(),
+            state: AtomicU8::new(STATE_EMPTY),
             list: ptr::null_mut(),
-            state: AtomicU8::new(SLOT_EMPTY),
+            pointers: Pointers::default(),
             waker: MaybeUninit::uninit(),
         }
     }

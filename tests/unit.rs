@@ -2,7 +2,6 @@ use core::pin::pin;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 use core::task::Waker;
-use std::boxed::Box;
 use std::sync::Arc;
 use wakerset::WakerList;
 use wakerset::WakerSlot;
