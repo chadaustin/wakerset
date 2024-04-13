@@ -165,7 +165,9 @@ impl WakerList {
     }
 
     /// Unlinks a slot from the list, dropping its [core::task::Waker].
+    /// Panics if not linked.
     pub fn unlink(self: Pin<&mut Self>, mut slot: Pin<&mut WakerSlot>) {
+        assert!(!slot.list.is_null(), "unlink called on unlinked slot");
         // SAFETY: TODO ...
         unsafe {
             let list = self.get_unchecked_mut() as *mut _;

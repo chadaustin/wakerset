@@ -142,6 +142,16 @@ fn unlink_slot_drops_waker() {
 }
 
 #[test]
+fn unlink_without_link_panics() {
+    let mut list = pin!(WakerList::new());
+    let mut slot = pin!(WakerSlot::new());
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        list.as_mut().unlink(slot.as_mut());
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
 fn unlink_wrong_list_panics() {
     let task = Task::new();
 
