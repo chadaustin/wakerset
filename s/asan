@@ -1,0 +1,5 @@
+#!/bin/bash
+set -e
+cd "${BASH_SOURCE%/*}"/..
+
+ASAN_SYMBOLIZER_PATH=/usr/bin/llvm-symbolizer-14 RUSTFLAGS=-Zsanitizer=address cargo +nightly test
