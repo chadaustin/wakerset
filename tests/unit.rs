@@ -1,7 +1,10 @@
+use core::mem;
+use core::panic::AssertUnwindSafe;
 use core::pin::pin;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 use core::task::Waker;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use wakerset::WakerList;
 use wakerset::WakerSlot;
@@ -146,11 +149,28 @@ fn unlink_wrong_list_panics() {
     let mut list2 = Box::pin(WakerList::new());
     let mut slot = Box::pin(WakerSlot::new());
     list1.as_mut().link(slot.as_mut(), task.waker());
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let result = catch_unwind(AssertUnwindSafe(|| {
         list2.as_mut().unlink(slot.as_mut());
     }));
     assert!(result.is_err());
     list1.as_mut().unlink(slot.as_mut());
+}
+
+#[test]
+fn drop_list_before_slot_panics() {
+    let task = Task::new();
+
+    let mut list = Box::pin(WakerList::new());
+    let mut slot = Box::pin(WakerSlot::new());
+    list.as_mut().link(slot.as_mut(), task.waker());
+    // Toggle to illustrate that the process terminates.
+    if !true {
+        mem::forget(slot);
+        drop(list);
+        assert!(false, "program should have terminated already");
+    } else {
+        list.as_mut().unlink(slot.as_mut());
+    }
 }
 
 #[cfg(target_pointer_width = "64")]

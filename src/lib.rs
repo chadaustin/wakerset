@@ -55,6 +55,11 @@ impl Pointers {
         }
     }
 
+    /// Is empty when either null or self-linked.
+    fn is_empty(&self) -> bool {
+        self.next.is_null() || (self as *const Pointers == self.next)
+    }
+
     /// Returns whether next is non-null.
     fn is_linked(&self) -> bool {
         !self.next.is_null()
@@ -111,7 +116,26 @@ pub struct WakerList {
 
 unsafe impl Send for WakerList {}
 
-// TODO: impl Drop for WakerList
+#[allow(non_snake_case)]
+#[inline(never)]
+#[cold]
+extern "C" fn MUST_UNLINK_ALL_WakerSlots_BEFORE_DROPPING_LIST() -> ! {
+    // panic! from extern "C" is an abort with an error message.
+    panic!("Must unlink all WakerSlots before dropping list")
+    // Another option, at the cost of a tiny, stable, dependency, is
+    // the `abort` crate.
+    //abort::abort()
+}
+
+impl Drop for WakerList {
+    fn drop(&mut self) {
+        if !self.pointers.is_empty() {
+            // We cannot panic, because it is UB to deallocate the
+            // list while slots hold references.
+            MUST_UNLINK_ALL_WakerSlots_BEFORE_DROPPING_LIST();
+        }
+    }
+}
 
 impl WakerList {
     /// Returns an empty list.
@@ -207,7 +231,7 @@ impl Default for UnlockedWakerList {
     }
 }
 
-// TODO: impl Drop for WakerList
+// TODO: impl Drop for UnlockedWakerList
 
 impl UnlockedWakerList {
     // TODO: must release the lock before invoking wakers
@@ -233,6 +257,18 @@ impl UnlockedWakerList {
         }
     }
 }
+
+/**
+ * Possible state transitions:
+ * EMPTY -> LINKED
+ *   - WakerList lock must be held
+ * LINKED -> EMPTY
+ *   - WakerList lock must be held
+ * LINKED -> PENDING_WAKE
+ *   - WakerList lock must be held
+ * PENDING_WAKE -> EMPTY
+ *   - no locks held.
+ */
 
 const STATE_EMPTY: u8 = 0;
 const STATE_LINKED: u8 = 1;
@@ -302,6 +338,7 @@ impl WakerSlot {
     /// Returns whether this slot is linked into the [WakerList] (and
     /// therefore has a waker).
     pub fn is_linked(&self) -> bool {
+        // TODO: spin on state != STATE_PENDING_WAKE
         self.pointers.is_linked()
     }
 
