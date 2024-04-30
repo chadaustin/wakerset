@@ -1,43 +1,48 @@
 use core::pin::Pin;
+use pin_project::pin_project;
+use pinned_mutex::std::PinnedMutex;
 use std::sync::Arc;
-use std::sync::Mutex;
 use wakerset::WakerList;
 use wakerset::WakerSlot;
 
 const TC: usize = 16;
-const ITER: u64 = 10000;
+const ITER: u64 = 1000000;
 
 #[derive(Default)]
+#[pin_project]
 struct Inner {
     iter_limit: u64,
     count: u64,
+    #[pin]
     waiters: WakerList,
 }
 
-struct DS(Mutex<Inner>);
+#[derive(Clone)]
+struct DS(Pin<Arc<PinnedMutex<Inner>>>);
 
 impl DS {
     fn new(iter_limit: u64) -> DS {
-        DS(Mutex::new(Inner {
+        DS(Arc::pin(PinnedMutex::new(Inner {
             iter_limit,
             ..Default::default()
-        }))
+        })))
     }
 
-    fn wake_waiters(self: Pin<&Self>) -> bool {
-        let inner = self.0.lock().unwrap();
+    fn wake_waiters(self: &DS) -> bool {
+        let mut inner = self.0.as_ref().lock();
         if inner.count >= inner.iter_limit {
             return false;
         }
-        let wakers = inner.waiters.extract_wakers();
+        *inner.as_mut().project().count += 1;
+        let wakers = inner.as_mut().project().waiters.extract_wakers();
         drop(inner);
         wakers.notify_all();
         true
     }
 }
 
-async fn wake_repeatedly(ds: Pin<Arc<DS>>) {
-    while ds.as_ref().wake_waiters() {}
+async fn wake_repeatedly(ds: DS) {
+    while ds.wake_waiters() {}
 }
 
 #[test]
@@ -47,7 +52,7 @@ fn stress_test() -> anyhow::Result<()> {
         .build()
         .unwrap();
     rt.block_on(async move {
-        let ds = Arc::pin(DS::new(ITER));
+        let ds = DS::new(ITER);
         let waker_task = tokio::spawn(wake_repeatedly(ds.clone()));
         drop(ds);
 
