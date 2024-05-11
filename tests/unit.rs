@@ -183,6 +183,21 @@ fn drop_list_before_slot_panics() {
     }
 }
 
+#[test]
+fn second_link_replaces_waker() {
+    let task1 = Task::new();
+    let task2 = Task::new();
+
+    let mut list = Box::pin(WakerList::new());
+    let mut slot = Box::pin(WakerSlot::new());
+    list.as_mut().link(slot.as_mut(), task1.waker());
+    list.as_mut().link(slot.as_mut(), task2.waker());
+
+    list.as_mut().extract_wakers().notify_all();
+    assert_eq!(0, task1.wake_count());
+    assert_eq!(1, task2.wake_count());
+}
+
 #[cfg(target_pointer_width = "64")]
 mod tests64 {
     use super::*;

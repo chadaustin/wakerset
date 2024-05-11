@@ -5,6 +5,7 @@ use core::marker::PhantomPinned;
 use core::mem;
 use core::mem::offset_of;
 use core::mem::MaybeUninit;
+use core::ops::DerefMut;
 use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::AtomicU8;
@@ -149,18 +150,23 @@ impl WakerList {
         unsafe {
             // TODO: spinlock until slot.state != SLOT_PENDING_WAKE
 
-            // Panics if this slot is already linked.
-            // TODO: write test coverage.
-            self.as_mut().pointers().link_back(slot.as_mut().pointers());
+            if slot.is_linked() {
+                let slot = slot.get_unchecked_mut();
+                slot.list = self.get_unchecked_mut() as *mut _;
+                slot.state.store(STATE_LINKED, Ordering::Release);
+                *slot.waker.assume_init_mut().deref_mut() = waker.into();
+            } else {
+                self.as_mut().pointers().link_back(slot.as_mut().pointers());
 
-            let slot = slot.get_unchecked_mut();
-            slot.list = self.get_unchecked_mut() as *mut _;
+                let slot = slot.get_unchecked_mut();
+                slot.list = self.get_unchecked_mut() as *mut _;
 
-            // The list lock is held, and we
+                // The list lock is held, and we
 
-            // TODO: CAS
-            slot.state.store(STATE_LINKED, Ordering::Release);
-            slot.waker.write(UnsafeCell::new(waker));
+                // TODO: CAS
+                slot.state.store(STATE_LINKED, Ordering::Release);
+                slot.waker.write(UnsafeCell::new(waker));
+            }
         }
     }
 
