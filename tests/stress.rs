@@ -2,7 +2,10 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::Context;
 use core::task::Poll;
+use futures::select_biased;
+use futures::FutureExt;
 use pin_project::pin_project;
+use pin_project::pinned_drop;
 use pinned_mutex::std::PinnedMutex;
 use std::sync::Arc;
 use wakerset::WakerList;
@@ -12,6 +15,7 @@ const TC: usize = 16;
 const ITER: u64 = if cfg!(miri) { 1000 } else { 1000000 };
 const WAKER_TASKS: u64 = 1;
 const YIELD_TASKS: u64 = 8;
+const DROP_TASKS: u64 = 8;
 
 #[derive(Default)]
 #[pin_project]
@@ -59,12 +63,27 @@ impl DS {
     }
 }
 
-#[pin_project]
+#[pin_project(PinnedDrop)]
 struct Block<'a> {
     ds: &'a DS,
     count: u64,
     #[pin]
     waker: WakerSlot,
+}
+
+#[pinned_drop]
+impl PinnedDrop for Block<'_> {
+    fn drop(mut self: Pin<&mut Self>) {
+        if self.waker.is_linked() {
+            let mut inner = self.ds.0.as_ref().lock();
+            inner
+                .as_mut()
+                .project()
+                .waiters
+                .unlink(self.as_mut().project().waker);
+            assert!(!self.waker.is_linked(), "unlink did not work");
+        }
+    }
 }
 
 impl Future for Block<'_> {
@@ -102,6 +121,15 @@ async fn yield_repeatedly(ds: DS) {
     }
 }
 
+async fn drop_repeatedly(ds: DS) {
+    while select_biased! {
+        a = ds.block().fuse() => a,
+        b = ds.block().fuse() => b,
+        c = ds.block().fuse() => c,
+        d = ds.block().fuse() => d,
+    } {}
+}
+
 #[test]
 fn stress_test() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -118,6 +146,9 @@ fn stress_test() -> anyhow::Result<()> {
 
         for _ in 0..YIELD_TASKS {
             jh.push(tokio::spawn(yield_repeatedly(ds.clone())));
+        }
+        for _ in 0..DROP_TASKS {
+            jh.push(tokio::spawn(drop_repeatedly(ds.clone())));
         }
 
         drop(ds);
