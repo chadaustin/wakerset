@@ -6,6 +6,7 @@ use core::sync::atomic::Ordering;
 use core::task::Waker;
 use std::panic::catch_unwind;
 use std::sync::Arc;
+use wakerset::UnlockedWakerList;
 use wakerset::WakerList;
 use wakerset::WakerSlot;
 
@@ -206,7 +207,23 @@ mod tests64 {
     #[test]
     fn test_sizes() {
         assert_eq!(16, mem::size_of::<WakerList>());
-        // TODO: Can we make this fit in 40?
-        assert_eq!(48, mem::size_of::<WakerSlot>());
+        assert_eq!(40, mem::size_of::<WakerSlot>());
+    }
+
+    #[test]
+    fn test_extracted_waker_set_size() {
+        // Unfortunately, arrayvec::ArrayVec's use of MaybeUnunit
+        // seems to disable niche-filling. That's probably okay,
+        // because we can fit 15 wakers in 256 bytes.
+        if false {
+            assert_eq!(
+                mem::size_of::<UnlockedWakerList>(),
+                mem::size_of::<Option<UnlockedWakerList>>()
+            );
+        }
+        // It's okay to adjust this. Just wanted to measure. We're
+        // trading stack copying with number of locks acquired during
+        // wake.
+        assert_eq!(128, mem::size_of::<Option<UnlockedWakerList>>());
     }
 }
