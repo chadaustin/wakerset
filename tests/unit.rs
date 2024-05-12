@@ -143,13 +143,11 @@ fn unlink_slot_drops_waker() {
 }
 
 #[test]
-fn unlink_without_link_panics() {
+fn unlink_without_link_is_no_op() {
     let mut list = pin!(WakerList::new());
     let mut slot = pin!(WakerSlot::new());
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        list.as_mut().unlink(slot.as_mut());
-    }));
-    assert!(result.is_err());
+    list.as_mut().unlink(slot.as_mut());
+    list.as_mut().unlink(slot.as_mut());
 }
 
 #[test]
