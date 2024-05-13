@@ -8,8 +8,8 @@ use core::mem::MaybeUninit;
 use core::ops::DerefMut;
 use core::pin::Pin;
 use core::ptr;
-use core::sync::atomic::Ordering;
 use core::sync::atomic::AtomicPtr;
+use core::sync::atomic::Ordering;
 use core::task::Waker;
 use pinned_aliasable::Aliasable;
 
@@ -151,7 +151,7 @@ impl WakerList {
         unsafe {
             let selfp = self.as_mut().get_unchecked_mut() as *mut _;
             let slotp = slot.as_mut().get_unchecked_mut() as *mut WakerSlot;
-            
+
             if (*slotp).is_linked() {
                 *(*slotp).waker.assume_init_mut().deref_mut() = waker.into();
             } else {
