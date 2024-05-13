@@ -8,6 +8,8 @@ use core::mem::MaybeUninit;
 use core::ops::DerefMut;
 use core::pin::Pin;
 use core::ptr;
+use core::sync::atomic::Ordering;
+use core::sync::atomic::AtomicPtr;
 use core::task::Waker;
 use pinned_aliasable::Aliasable;
 
@@ -146,41 +148,41 @@ impl WakerList {
 
     /// Adds a [core::task::Waker] to the list, storing it in [WakerSlot], which is linked into the [WakerList].
     pub fn link(mut self: Pin<&mut Self>, mut slot: Pin<&mut WakerSlot>, waker: Waker) {
-        // SAFETY: TODO ...
         unsafe {
-            // TODO: spinlock until slot.state != SLOT_PENDING_WAKE
-
-            if slot.is_linked() {
-                let slot = slot.get_unchecked_mut();
-                slot.list = self.get_unchecked_mut() as *mut _;
-                *slot.waker.assume_init_mut().deref_mut() = waker.into();
+            let selfp = self.as_mut().get_unchecked_mut() as *mut _;
+            let slotp = slot.as_mut().get_unchecked_mut() as *mut WakerSlot;
+            
+            if (*slotp).is_linked() {
+                *(*slotp).waker.assume_init_mut().deref_mut() = waker.into();
             } else {
                 self.as_mut().pointers().link_back(slot.as_mut().pointers());
 
-                let slot = slot.get_unchecked_mut();
-                slot.list = self.get_unchecked_mut() as *mut _;
-
                 // TODO: CAS
-                slot.waker.write(UnsafeCell::new(waker));
+                (*slotp).waker.write(UnsafeCell::new(waker));
             }
+            (*slotp).list.store(selfp, Ordering::Release);
         }
     }
 
     /// Unlinks a slot from the list, dropping its [core::task::Waker].
     /// No-op if not linked.
     pub fn unlink(self: Pin<&mut Self>, mut slot: Pin<&mut WakerSlot>) {
-        if slot.list.is_null() {
-            // Slot is already unlinked after acquiring the list mutex.
+        // Relaxed is safe because the list mutex is acquired.
+        let slot_list = slot.list.load(Ordering::Relaxed);
+        if slot_list.is_null() {
+            // Caller probably already checked is_link() before
+            // unlink(), but the slot was unlinked before acquiring
+            // the list mutex.
             return;
         }
         // SAFETY: TODO ...
         unsafe {
             let list = self.get_unchecked_mut() as *mut _;
-            assert_eq!(list, slot.list, "slot must be unlinked from same list");
+            assert_eq!(list, slot_list, "slot must be unlinked from same list");
             slot.as_mut().pointers().unlink();
             let slot = slot.get_unchecked_mut();
-            slot.list = ptr::null_mut();
             slot.waker.assume_init_drop();
+            slot.list.store(ptr::null_mut(), Ordering::Release);
         }
     }
 
@@ -213,7 +215,6 @@ impl WakerList {
                     .cast::<WakerSlot>();
 
                 wakers.push((*slot).waker.assume_init_read().into_inner());
-                (*slot).list = ptr::null_mut();
 
                 // Unlink this node.
                 (*(*p).next).prev = (*p).prev;
@@ -223,6 +224,9 @@ impl WakerList {
 
                 (*p).next = ptr::null_mut();
                 (*p).prev = ptr::null_mut();
+
+                // Advertise unlinked to any racing is_linked() call.
+                (*slot).list.store(ptr::null_mut(), Ordering::Release);
 
                 p = next;
             }
@@ -271,9 +275,11 @@ pub struct WakerSlot {
     // This data structure is entirely synchronized by the WakerList's
     // mutex.
     /// When linked, points to the owning list. Will not invalidate
-    /// because WakerList Drop explodes if non-empty.
-    /// Must only be modified under the WakerList lock.
-    list: *mut WakerList,
+    /// because WakerList Drop explodes if non-empty. Only written
+    /// under the WakerList lock, but may be optimistically checked
+    /// outside of the lock with `is_linked`. If non-null, the
+    /// pointers are linked into the referenced WakerList.
+    list: AtomicPtr<WakerList>,
     /// Null pointers or linked into WakerList.
     /// When linked, `waker` is valid.
     pointers: Pointers,
@@ -288,7 +294,7 @@ unsafe impl Send for WakerSlot {}
 impl Default for WakerSlot {
     fn default() -> Self {
         Self {
-            list: ptr::null_mut(),
+            list: AtomicPtr::new(ptr::null_mut()),
             pointers: Pointers::default(),
             waker: MaybeUninit::uninit(),
         }
@@ -326,11 +332,9 @@ impl WakerSlot {
 
     /// Returns whether this slot is linked into the [WakerList] (and
     /// therefore has a waker).
+    /// TODO: document the race
     pub fn is_linked(&self) -> bool {
-        // TODO: This is a race. `list` should be atomic and we should
-        // check it here, only acquiring the mutex to unlink when it
-        // returns false.
-        self.pointers.is_linked()
+        !self.list.load(Ordering::Acquire).is_null()
     }
 
     fn pointers(self: Pin<&mut Self>) -> Pin<&mut Pointers> {
