@@ -4,4 +4,3 @@ cd "${BASH_SOURCE%/*}"/..
 
 SYSTEM_TARGET=$(rustc -vV | grep -e '^host: ' | sed 's/^host: //')
 ASAN_SYMBOLIZER_PATH=/usr/bin/llvm-symbolizer-14 RUSTFLAGS=-Zsanitizer=address cargo +nightly test -Zbuild-std --target "$SYSTEM_TARGET" "$@"
-
