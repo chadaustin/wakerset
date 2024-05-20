@@ -264,8 +264,6 @@ impl Default for UnlockedWakerList {
     }
 }
 
-// TODO: impl Drop for UnlockedWakerList
-
 impl UnlockedWakerList {
     // TODO: document must release the lock before invoking wakers
     pub fn notify_all(mut self) {
