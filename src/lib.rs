@@ -189,24 +189,26 @@ impl WakerList {
         }
     }
 
-    pub fn extract_wakers(mut self: Pin<&mut Self>) -> UnlockedWakerList {
+    pub fn extract_wakers(self: Pin<&mut Self>) -> UnlockedWakerList {
         let mut wakers = ArrayVec::new();
 
         // SAFETY: self is pinned
         unsafe {
-            let listp = self.as_mut().pointers().get_unchecked_mut() as *mut Pointers;
-            let mut p = (*listp).next;
+            let selfp = self.get_unchecked_mut() as *mut Self;
+            let listp = addr_of_mut!((*selfp).pointers);
+
+            let mut p = addr_of_mut!((*listp).next).read();
 
             // Check if never been knotted.
             if p.is_null() {
-                assert!((*listp).prev.is_null());
+                assert!(addr_of_mut!((*listp).prev).read().is_null());
                 return UnlockedWakerList::default();
             }
 
             loop {
                 if p == listp {
-                    assert_eq!((*listp).next, listp);
-                    assert_eq!((*listp).prev, listp);
+                    assert_eq!(addr_of_mut!((*listp).next).read(), listp);
+                    assert_eq!(addr_of_mut!((*listp).prev).read(), listp);
                     break;
                 }
                 if wakers.is_full() {
@@ -223,16 +225,15 @@ impl WakerList {
                     .into_inner();
                 wakers.push(waker);
 
-                //wakers.push((*slot).waker.assume_init_read().into_inner());
+                let next = addr_of_mut!((*p).next).read();
+                let prev = addr_of_mut!((*p).prev).read();
 
                 // Unlink this node.
-                (*(*p).next).prev = (*p).prev;
-                (*(*p).prev).next = (*p).next;
+                addr_of_mut!((*next).prev).write(prev);
+                addr_of_mut!((*prev).next).write(next);
 
-                let next = (*p).next;
-
-                (*p).next = ptr::null_mut();
-                (*p).prev = ptr::null_mut();
+                addr_of_mut!((*p).next).write(ptr::null_mut());
+                addr_of_mut!((*p).prev).write(ptr::null_mut());
 
                 // Advertise unlinked to any racing is_linked() call.
                 (*slot).list.store(ptr::null_mut(), Ordering::Release);
@@ -242,11 +243,6 @@ impl WakerList {
         };
 
         UnlockedWakerList { wakers }
-    }
-
-    fn pointers(self: Pin<&mut Self>) -> Pin<&mut Pointers> {
-        // SAFETY: pointers is pinned when self is
-        unsafe { self.map_unchecked_mut(|s| &mut s.pointers) }
     }
 }
 
