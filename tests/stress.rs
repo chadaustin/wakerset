@@ -96,11 +96,8 @@ impl Future for Block<'_> {
             Poll::Ready(false)
         } else if self.count == inner.count {
             //eprintln!("linking and waiting");
-            inner
-                .as_mut()
-                .project()
-                .waiters
-                .link(self.project().waker, cx.waker().clone());
+            let waiters = inner.as_mut().project().waiters;
+            waiters.link(self.project().waker, cx.waker().clone());
             Poll::Pending
         } else {
             //eprintln!("unblocking");

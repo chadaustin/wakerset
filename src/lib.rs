@@ -8,6 +8,7 @@ use core::mem::MaybeUninit;
 use core::ops::DerefMut;
 use core::pin::Pin;
 use core::ptr;
+use core::ptr::addr_of_mut;
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering;
 use core::task::Waker;
@@ -42,17 +43,16 @@ impl Default for Pointers {
 impl Pointers {
     /// Now that we know this node is pinned, if the pointers are
     /// null, point to ourselves.
-    fn knot(self: Pin<&mut Self>) {
+    unsafe fn knot(ptrs: *mut Pointers) {
         // SAFETY: We are pinned and not moving anything.
         unsafe {
-            let selfp = self.get_unchecked_mut() as *mut Pointers;
-            if (*selfp).next.is_null() {
+            if (*ptrs).next.is_null() {
                 assert!(
-                    (*selfp).prev.is_null(),
+                    (*ptrs).prev.is_null(),
                     "either both are null or neither are"
                 );
-                (*selfp).next = selfp;
-                (*selfp).prev = selfp;
+                (*ptrs).next = ptrs;
+                (*ptrs).prev = ptrs;
             }
         }
     }
@@ -87,18 +87,16 @@ impl Pointers {
 
     /// Link a value to the back of the list. The value must be
     /// unlinked.
-    unsafe fn link_back(mut self: Pin<&mut Self>, value: Pin<&mut Pointers>) {
-        self.as_mut().knot();
-        // SAFETY: both pointers are pinned
+    unsafe fn link_back(list: *mut Pointers, node: *mut Pointers) {
+        // SAFETY: TODO
         unsafe {
-            let list = self.get_unchecked_mut() as *mut Pointers;
-            let elem = value.get_unchecked_mut() as *mut Pointers;
-            assert!((*elem).next.is_null());
-            assert!((*elem).prev.is_null());
-            (*elem).next = list;
-            (*elem).prev = (*list).prev;
-            (*(*list).prev).next = elem;
-            (*list).prev = elem;
+            Pointers::knot(list);
+            assert!((*node).next.is_null());
+            assert!((*node).prev.is_null());
+            (*node).next = list;
+            (*node).prev = (*list).prev;
+            (*(*list).prev).next = node;
+            (*list).prev = node;
         }
     }
 }
@@ -146,18 +144,19 @@ impl WakerList {
     }
 
     /// Adds a [core::task::Waker] to the list, storing it in [WakerSlot], which is linked into the [WakerList].
-    pub fn link(mut self: Pin<&mut Self>, mut slot: Pin<&mut WakerSlot>, waker: Waker) {
+    pub fn link(self: Pin<&mut Self>, slot: Pin<&mut WakerSlot>, waker: Waker) {
         unsafe {
-            let selfp = self.as_mut().get_unchecked_mut() as *mut _;
-            let slotp = slot.as_mut().get_unchecked_mut() as *mut WakerSlot;
+            let selfp = self.get_unchecked_mut() as *mut Self;
+            let slotp = slot.get_unchecked_mut() as *mut WakerSlot;
 
             if (*slotp).is_linked() {
                 *(*slotp).waker.assume_init_mut().deref_mut() = waker.into();
             } else {
-                self.as_mut().pointers().link_back(slot.as_mut().pointers());
-
-                // TODO: CAS
-                (*slotp).waker.write(UnsafeCell::new(waker));
+                Pointers::link_back(
+                    addr_of_mut!((*selfp).pointers),
+                    addr_of_mut!((*slotp).pointers),
+                );
+                addr_of_mut!((*slotp).waker).write(MaybeUninit::new(UnsafeCell::new(waker)));
             }
             (*slotp).list.store(selfp, Ordering::Release);
         }
@@ -213,7 +212,13 @@ impl WakerList {
                     .byte_sub(offset_of!(WakerSlot, pointers))
                     .cast::<WakerSlot>();
 
-                wakers.push((*slot).waker.assume_init_read().into_inner());
+                let waker = ptr::addr_of!((*slot).waker)
+                    .read()
+                    .assume_init_read()
+                    .into_inner();
+                wakers.push(waker);
+
+                //wakers.push((*slot).waker.assume_init_read().into_inner());
 
                 // Unlink this node.
                 (*(*p).next).prev = (*p).prev;
