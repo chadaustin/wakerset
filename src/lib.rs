@@ -70,20 +70,20 @@ impl Pointers {
     }
 
     /// Unlink this node from its neighbors.
-    // TODO: Is this function safe or not?
-    fn unlink(self: Pin<&mut Self>) {
+    unsafe fn unlink(node: *mut Pointers) {
         // SAFETY: self is pinned, and we assume that next and prev
         // are valid and locked
         unsafe {
-            let elem = self.get_unchecked_mut() as *mut Pointers;
-            let next = (*elem).next;
-            let prev = (*elem).prev;
+            let nextp = addr_of_mut!((*node).next);
+            let prevp = addr_of_mut!((*node).prev);
+            let next = nextp.read();
+            let prev = prevp.read();
             assert!(!next.is_null());
             assert!(!prev.is_null());
-            (*prev).next = next;
-            (*next).prev = prev;
-            (*elem).next = ptr::null_mut();
-            (*elem).prev = ptr::null_mut();
+            addr_of_mut!((*prev).next).write(next);
+            addr_of_mut!((*next).prev).write(prev);
+            nextp.write(ptr::null_mut());
+            prevp.write(ptr::null_mut());
         }
     }
 
@@ -179,7 +179,8 @@ impl WakerList {
         unsafe {
             let list = self.get_unchecked_mut() as *mut _;
             assert_eq!(list, slot_list, "slot must be unlinked from same list");
-            slot.as_mut().pointers().unlink();
+            let slotp = slot.as_mut().get_unchecked_mut() as *mut WakerSlot;
+            Pointers::unlink(addr_of_mut!((*slotp).pointers));
             let slot = slot.get_unchecked_mut();
             slot.waker.assume_init_drop();
             slot.list.store(ptr::null_mut(), Ordering::Release);
@@ -341,10 +342,5 @@ impl WakerSlot {
     /// TODO: document the race
     pub fn is_linked(&self) -> bool {
         !self.list.load(Ordering::Acquire).is_null()
-    }
-
-    fn pointers(self: Pin<&mut Self>) -> Pin<&mut Pointers> {
-        // SAFETY: pointers is pinned when self is
-        unsafe { self.map_unchecked_mut(|s| &mut s.pointers) }
     }
 }
