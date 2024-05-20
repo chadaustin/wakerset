@@ -11,7 +11,6 @@ use core::ptr;
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering;
 use core::task::Waker;
-use pinned_aliasable::Aliasable;
 
 const EXTRACT_CAPACITY: usize = 7;
 
