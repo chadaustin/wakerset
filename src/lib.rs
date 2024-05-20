@@ -43,16 +43,18 @@ impl Default for Pointers {
 impl Pointers {
     /// Now that we know this node is pinned, if the pointers are
     /// null, point to ourselves.
-    unsafe fn knot(ptrs: *mut Pointers) {
+    unsafe fn knot(node: *mut Pointers) {
         // SAFETY: We are pinned and not moving anything.
         unsafe {
-            if (*ptrs).next.is_null() {
+            let nextp = addr_of_mut!((*node).next);
+            let prevp = addr_of_mut!((*node).prev);
+            if nextp.read().is_null() {
                 assert!(
-                    (*ptrs).prev.is_null(),
+                    prevp.read().is_null(),
                     "either both are null or neither are"
                 );
-                (*ptrs).next = ptrs;
-                (*ptrs).prev = ptrs;
+                nextp.write(node);
+                prevp.write(node);
             }
         }
     }
