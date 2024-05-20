@@ -93,12 +93,14 @@ impl Pointers {
         // SAFETY: TODO
         unsafe {
             Pointers::knot(list);
-            assert!((*node).next.is_null());
-            assert!((*node).prev.is_null());
-            (*node).next = list;
-            (*node).prev = (*list).prev;
-            (*(*list).prev).next = node;
-            (*list).prev = node;
+            let nodenextp = addr_of_mut!((*node).next);
+            let nodeprevp = addr_of_mut!((*node).prev);
+            assert!(nodenextp.read().is_null());
+            assert!(nodeprevp.read().is_null());
+            nodenextp.write(list);
+            nodeprevp.write(addr_of_mut!((*list).prev).read());
+            addr_of_mut!((*(*list).prev).next).write(node);
+            addr_of_mut!((*list).prev).write(node);
         }
     }
 }
