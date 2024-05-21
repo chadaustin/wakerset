@@ -15,13 +15,16 @@ use core::task::Waker;
 
 const EXTRACT_CAPACITY: usize = 7;
 
-/// The linkage in a doubly-linked list. Used as the list container
-/// (pointing to head and tail), each node (pointing to prev and
-/// next), and used as a singly-linked waker list (no prev).
+/// The linkage in a doubly-linked list. Used both by the list
+/// container (pointing to head and tail) and each node (pointing to
+/// prev and next).
 ///
-/// The default, when it's still movable, is two null pointers. When
-/// pinned, it can transition to self-referential, where both `next`
-/// and `prev` point to self.
+/// There are two representations of the empty list: both pointers are
+/// null or they both point to self.
+///
+/// Null is the default, because it's movable. Once pinned, we know it
+/// will never be moved again, so it's made cyclic, where `next` and
+/// `prev` point to self.
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 struct Pointers {
@@ -42,9 +45,11 @@ impl Default for Pointers {
 
 impl Pointers {
     /// Now that we know this node is pinned, if the pointers are
-    /// null, point to ourselves.
-    unsafe fn knot(node: *mut Pointers) {
-        // SAFETY: We are pinned and not moving anything.
+    /// null, point to ourselves. This simplifies all remaining
+    /// pointer updates.
+    unsafe fn ensure_cyclic(node: *mut Pointers) {
+        // SAFETY: `node` is pinned and nothing will move again.
+        // MIRI: No references are formed.
         unsafe {
             let nextp = addr_of_mut!((*node).next);
             let prevp = addr_of_mut!((*node).prev);
@@ -61,12 +66,8 @@ impl Pointers {
 
     /// Is empty when either null or self-linked.
     fn is_empty(&self) -> bool {
+        // TODO: Is forming a reference here compatible with MIRI?
         self.next.is_null() || (self as *const Pointers == self.next)
-    }
-
-    /// Returns whether next is non-null.
-    fn is_linked(&self) -> bool {
-        !self.next.is_null()
     }
 
     /// Unlink this node from its neighbors.
@@ -92,7 +93,7 @@ impl Pointers {
     unsafe fn link_back(list: *mut Pointers, node: *mut Pointers) {
         // SAFETY: TODO
         unsafe {
-            Pointers::knot(list);
+            Pointers::ensure_cyclic(list);
             let nodenextp = addr_of_mut!((*node).next);
             let nodeprevp = addr_of_mut!((*node).prev);
             assert!(nodenextp.read().is_null());
@@ -109,12 +110,11 @@ impl Pointers {
 ///
 /// Does not allocate: the wakers themselves are stored in
 /// [WakerSlot]. Only two pointers in size.
-
 #[derive(Debug, Default)]
 pub struct WakerList {
     // `next` is head and `prev` is tail. Upon default initialization,
-    // the pointers are null and movable. On first pinned use, they
-    // are knotted and become self-referential.
+    // the pointers are null and movable. On first pinned use, we know
+    // it will never be moved again, so they become self-referential.
     pointers: Pointers,
 }
 
@@ -199,7 +199,7 @@ impl WakerList {
 
             let mut p = addr_of_mut!((*listp).next).read();
 
-            // Check if never been knotted.
+            // If null, then not cyclic, and we can just return.
             if p.is_null() {
                 assert!(addr_of_mut!((*listp).prev).read().is_null());
                 return UnlockedWakerList::default();
@@ -317,7 +317,7 @@ extern "C" fn MUST_UNLINK_WakerSlot_BEFORE_DROP() -> ! {
 
 impl Drop for WakerSlot {
     fn drop(&mut self) {
-        if self.pointers.is_linked() {
+        if self.is_linked() {
             // It is undefined behavior to drop a linked WakerSlot
             // while linked and the WakerList's mutex is not held, so
             // all we can do is abort. panic! could be caught and
