@@ -8,6 +8,7 @@ use core::mem::MaybeUninit;
 use core::ops::DerefMut;
 use core::pin::Pin;
 use core::ptr;
+use core::ptr::addr_of;
 use core::ptr::addr_of_mut;
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering;
@@ -158,7 +159,7 @@ impl WakerList {
             } else {
                 Pointers::link_back(
                     addr_of_mut!((*selfp).pointers),
-                    addr_of_mut!((*slotp).pointers),
+                    UnsafeCell::raw_get(addr_of!((*slotp).pointers)),
                 );
                 addr_of_mut!((*slotp).waker).write(MaybeUninit::new(UnsafeCell::new(waker)));
             }
@@ -182,7 +183,7 @@ impl WakerList {
             let list = self.get_unchecked_mut() as *mut _;
             assert_eq!(list, slot_list, "slot must be unlinked from same list");
             let slotp = slot.as_mut().get_unchecked_mut() as *mut WakerSlot;
-            Pointers::unlink(addr_of_mut!((*slotp).pointers));
+            Pointers::unlink(UnsafeCell::raw_get(addr_of!((*slotp).pointers)));
             let slot = slot.get_unchecked_mut();
             slot.waker.assume_init_drop();
             slot.list.store(ptr::null_mut(), Ordering::Release);
@@ -280,13 +281,12 @@ pub struct WakerSlot {
     /// When linked, points to the owning list. Will not invalidate
     /// because WakerList Drop explodes if non-empty. Only written
     /// under the WakerList lock, but may be optimistically checked
-    /// outside of the lock with `is_linked`. If non-null, the
-    /// pointers are linked into the referenced WakerList.
+    /// outside of the lock with `is_linked`. If non-null, `pointers`
+    /// are linked into the referenced WakerList and `waker` is set..
     list: AtomicPtr<WakerList>,
-    /// Null pointers or linked into WakerList.
-    /// When linked, `waker` is valid.
-    pointers: Pointers,
-    // Aliasable = writes safe outside of stacked borrows model
+    /// Null pointers or linked into WakerList. UnsafeCell: written by
+    /// WakerList independent of WakerSlot references
+    pointers: UnsafeCell<Pointers>,
     // MaybeUninit = only set iff linked
     // UnsafeCell = may be mutated through shared references
     waker: MaybeUninit<UnsafeCell<Waker>>,
@@ -298,7 +298,7 @@ impl Default for WakerSlot {
     fn default() -> Self {
         Self {
             list: AtomicPtr::new(ptr::null_mut()),
-            pointers: Pointers::default(),
+            pointers: UnsafeCell::new(Pointers::default()),
             waker: MaybeUninit::uninit(),
         }
     }

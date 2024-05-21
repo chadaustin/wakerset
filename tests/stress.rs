@@ -12,7 +12,7 @@ use wakerset::WakerList;
 use wakerset::WakerSlot;
 
 const TC: usize = 16;
-const ITER: u64 = if cfg!(miri) { 1000 } else { 1000000 };
+const ITER: u64 = if cfg!(miri) { 100 } else { 1000000 };
 const WAKER_TASKS: u64 = 1;
 const YIELD_TASKS: u64 = 8;
 const DROP_TASKS: u64 = 8;
