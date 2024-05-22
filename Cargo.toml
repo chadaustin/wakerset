@@ -14,5 +14,5 @@ anyhow = "1"
 futures = { version = "0.3", default-features = false, features = ["async-await"] }
 static_assertions = "1.1"
 tokio = { version = "1.37", features = ["rt-multi-thread"] }
-pinned-mutex = "0.1"
+pinned-mutex = "0.2"
 pin-project = "1"
