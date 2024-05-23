@@ -14,6 +14,7 @@ use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering;
 use core::task::Waker;
 
+// If stress testing, set to a small number like 1 or 3.
 const EXTRACT_CAPACITY: usize = 7;
 
 /// The linkage in a doubly-linked list. Used both by the list
@@ -190,8 +191,9 @@ impl WakerList {
         }
     }
 
-    pub fn extract_wakers(self: Pin<&mut Self>) -> UnlockedWakerList {
+    pub fn extract_some_wakers(self: Pin<&mut Self>) -> ExtractedWakers {
         let mut wakers = ArrayVec::new();
+        let mut more = false;
 
         // SAFETY: self is pinned
         unsafe {
@@ -203,7 +205,7 @@ impl WakerList {
             // If null, then not cyclic, and we can just return.
             if p.is_null() {
                 assert!(addr_of_mut!((*listp).prev).read().is_null());
-                return UnlockedWakerList::default();
+                return ExtractedWakers::default();
             }
 
             loop {
@@ -213,6 +215,8 @@ impl WakerList {
                     break;
                 }
                 if wakers.is_full() {
+                    // We checked p == listp above, so we know there are more.
+                    more = true;
                     break;
                 }
 
@@ -243,7 +247,7 @@ impl WakerList {
             }
         };
 
-        UnlockedWakerList { wakers }
+        ExtractedWakers { wakers, more }
     }
 }
 
@@ -251,25 +255,28 @@ impl WakerList {
 /// [core::task::Waker::wake] can be called outside of any mutex
 /// protecting [WakerList].
 #[derive(Debug)]
-pub struct UnlockedWakerList {
+pub struct ExtractedWakers {
     wakers: ArrayVec<Waker, EXTRACT_CAPACITY>,
+    more: bool,
 }
 
-impl Default for UnlockedWakerList {
+impl Default for ExtractedWakers {
     fn default() -> Self {
         Self {
             wakers: ArrayVec::new(),
+            more: false,
         }
     }
 }
 
-impl UnlockedWakerList {
+impl ExtractedWakers {
     // TODO: document must release the lock before invoking wakers
-    pub fn notify_all(mut self) {
+    pub fn notify_all(mut self) -> bool {
         // Generated code has no memcpy with drain(..).
         for waker in self.wakers.drain(..) {
             waker.wake();
         }
+        self.more
     }
 }
 

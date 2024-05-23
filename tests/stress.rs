@@ -39,16 +39,17 @@ impl DS {
 
     fn wake_waiters(self: &DS) -> bool {
         let mut inner = self.0.as_ref().lock();
-        let result = if inner.count < inner.iter_limit {
-            *inner.as_mut().project().count += 1;
-            true
-        } else {
-            false
-        };
-        let wakers = inner.as_mut().project().waiters.extract_wakers();
+        if inner.count >= inner.iter_limit {
+            return false;
+        }
+        *inner.as_mut().project().count += 1;
+        let mut wakers = inner.as_mut().project().waiters.extract_some_wakers();
         drop(inner);
-        wakers.notify_all();
-        result
+        while wakers.notify_all() {
+            let mut inner = self.0.as_ref().lock();
+            wakers = inner.as_mut().project().waiters.extract_some_wakers();
+        }
+        true
     }
 
     fn block(self: &DS) -> impl Future<Output = bool> + '_ {
