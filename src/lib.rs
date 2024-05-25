@@ -1,3 +1,13 @@
+//! Asynchronous data structures like channels need to track sets of
+//! waiting futures. Holding them in a Vec requires allocation. We can
+//! do better by storing pending wakers in the futures themselves and
+//! linking them into an intrusive doubly-linked list.
+//!
+//! This crate provides a no_std, no_alloc, safe Rust interface to the
+//! above strategy. The shared data structure holds a [WakerList] and
+//! each pending future holds a [WakerSlot], each of which holds room
+//! for one [Waker].
+
 #![no_std]
 
 use arrayvec::ArrayVec;
@@ -13,6 +23,9 @@ use core::ptr::addr_of_mut;
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering;
 use core::task::Waker;
+
+#[cfg(doc)]
+use core::future::Future;
 
 // If stress testing, set to a small number like 1 or 3.
 const EXTRACT_CAPACITY: usize = 7;
@@ -108,7 +121,7 @@ impl Pointers {
     }
 }
 
-/// An ordered list of [core::task::Waker]s.
+/// List of pending [Waker]s.
 ///
 /// Does not allocate: the wakers themselves are stored in
 /// [WakerSlot]. Only two pointers in size.
@@ -149,7 +162,10 @@ impl WakerList {
         Default::default()
     }
 
-    /// Adds a [core::task::Waker] to the list, storing it in [WakerSlot], which is linked into the [WakerList].
+    /// Adds a [Waker] to the list, storing it in [WakerSlot], which
+    /// is then linked into the [WakerList]. If `slot` already
+    /// contains a `Waker`, it is replaced, and the old Waker is
+    /// dropped.
     pub fn link(self: Pin<&mut Self>, slot: Pin<&mut WakerSlot>, waker: Waker) {
         unsafe {
             let selfp = self.get_unchecked_mut() as *mut Self;
@@ -168,7 +184,7 @@ impl WakerList {
         }
     }
 
-    /// Unlinks a slot from the list, dropping its [core::task::Waker].
+    /// Unlinks a slot from the list, dropping its [Waker].
     /// No-op if not linked.
     pub fn unlink(self: Pin<&mut Self>, mut slot: Pin<&mut WakerSlot>) {
         // Relaxed is safe because the list mutex is acquired.
@@ -251,9 +267,8 @@ impl WakerList {
     }
 }
 
-/// List of [core::task::Waker] extracted from [WakerList] so that
-/// [core::task::Waker::wake] can be called outside of any mutex
-/// protecting [WakerList].
+/// List of [Waker] extracted from [WakerList] so that [Waker::wake]
+/// can be called outside of any mutex protecting [WakerList].
 #[derive(Debug)]
 pub struct ExtractedWakers {
     wakers: ArrayVec<Waker, EXTRACT_CAPACITY>,
@@ -280,7 +295,30 @@ impl ExtractedWakers {
     }
 }
 
-/// A [core::future::Future]'s waker registration slot.
+/// A [Future]'s waker registration slot. Holds at most one pending
+/// [Waker], which is stored in the slot.
+///
+/// See [WakerList::link] and [WakerList::unlink] for use.
+///
+/// <div class="warning">
+///
+/// `WakerSlot` must absolutely not be dropped while linked into a
+/// `WakerList`. If it is, the program will abort.
+///
+/// Your future's `Drop` implementation should contain something like
+/// the following, with all of the necessary `Pin` and `Mutex`
+/// machinery, of course.
+///
+/// ```rust,ignore
+/// if self.waker_slot.is_linked() {
+///   let mut list = self.get_pinned_waker_list();
+///   list.unlink(self.waker_slot);
+/// }
+/// ```
+///
+/// You may need the [pin_project](https://docs.rs/pin-project/latest/pin_project/)
+/// crate's [PinnedDrop](https://docs.rs/pin-project/latest/pin_project/attr.pinned_drop.html).
+/// </div>
 #[derive(Debug)]
 pub struct WakerSlot {
     // This data structure is entirely synchronized by the WakerList's
@@ -291,10 +329,11 @@ pub struct WakerSlot {
     /// outside of the lock with `is_linked`. If non-null, `pointers`
     /// are linked into the referenced WakerList and `waker` is set..
     list: AtomicPtr<WakerList>,
-    /// Null pointers or linked into WakerList. UnsafeCell: written by
-    /// WakerList independent of WakerSlot references
+    /// Null or linked into WakerList.
+    // UnsafeCell: written by WakerList independent of WakerSlot
+    // references
     pointers: UnsafeCell<Pointers>,
-    // MaybeUninit = only set iff linked
+    // MaybeUninit = only init iff linked
     // UnsafeCell = may be mutated through shared references
     waker: MaybeUninit<UnsafeCell<Waker>>,
 }
