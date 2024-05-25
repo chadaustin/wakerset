@@ -178,7 +178,8 @@ impl WakerList {
                     addr_of_mut!((*selfp).pointers),
                     UnsafeCell::raw_get(addr_of!((*slotp).pointers)),
                 );
-                addr_of_mut!((*slotp).waker).write(MaybeUninit::new(UnsafeCell::new(waker)));
+                addr_of_mut!((*slotp).waker)
+                    .write(MaybeUninit::new(UnsafeCell::new(waker)));
             }
             (*slotp).list.store(selfp, Ordering::Release);
         }
