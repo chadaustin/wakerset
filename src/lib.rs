@@ -15,7 +15,6 @@ use core::cell::UnsafeCell;
 use core::marker::PhantomPinned;
 use core::mem::offset_of;
 use core::mem::MaybeUninit;
-use core::ops::DerefMut;
 use core::pin::Pin;
 use core::ptr;
 use core::ptr::addr_of;
@@ -177,21 +176,29 @@ impl WakerList {
     /// contains a `Waker`, it is replaced, and the old `Waker` is
     /// dropped.
     pub fn link(self: Pin<&mut Self>, slot: Pin<&mut WakerSlot>, waker: Waker) {
-        unsafe {
-            let selfp = self.get_unchecked_mut() as *mut Self;
-            let slotp = slot.get_unchecked_mut() as *mut WakerSlot;
+        // No acquire fence is required: the list is locked.
+        if slot.as_ref().is_linked_locked() {
+            // SAFETY: If linked, the slot holds a waker.
+            // SAFETY: We will not move the slot.
+            unsafe {
+                *slot.get_unchecked_mut().waker.assume_init_mut().get_mut() = waker;
+            }
+        } else {
+            // SAFETY: Pinning holds. Nothing is moved.
+            // SAFETY: No references formed to slots we do not own.
+            unsafe {
+                let selfp = self.get_unchecked_mut() as *mut Self;
+                let slotp = slot.get_unchecked_mut() as *mut WakerSlot;
 
-            if (*slotp).is_linked() {
-                *(*slotp).waker.assume_init_mut().deref_mut() = waker.into();
-            } else {
                 Pointers::link_back(
                     addr_of_mut!((*selfp).pointers),
                     UnsafeCell::raw_get(addr_of!((*slotp).pointers)),
                 );
                 addr_of_mut!((*slotp).waker)
                     .write(MaybeUninit::new(UnsafeCell::new(waker)));
+                // Allow other threads to observe that we are linked.
+                (*slotp).list.store(selfp, Ordering::Release);
             }
-            (*slotp).list.store(selfp, Ordering::Release);
         }
     }
 
@@ -400,5 +407,11 @@ impl WakerSlot {
     /// order to unlink from `Drop`.
     pub fn is_linked(&self) -> bool {
         !self.list.load(Ordering::Acquire).is_null()
+    }
+
+    // Private API for use when WakerList is locked. Avoids an Acquire
+    // fence.
+    pub fn is_linked_locked(&self) -> bool {
+        !self.list.load(Ordering::Relaxed).is_null()
     }
 }
