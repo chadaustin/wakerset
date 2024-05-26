@@ -125,6 +125,16 @@ impl Pointers {
 ///
 /// Does not allocate: the wakers themselves are stored in
 /// [WakerSlot]. Only two pointers in size.
+///
+/// <div class="warning">
+///
+/// `WakerList` must absolutely not be dropped while any `WakerSlot`'s
+/// are linked. If it is, the program will abort.
+///
+/// `Future` implementations must ensure they do not outlive the
+/// `WakerList` and unlink themselves from `Drop`.
+///
+/// </div>
 #[derive(Debug, Default)]
 pub struct WakerList {
     // `next` is head and `prev` is tail. Upon default initialization,
@@ -157,14 +167,14 @@ impl Drop for WakerList {
 }
 
 impl WakerList {
-    /// Returns an empty list.
+    /// Constructs an empty list.
     pub fn new() -> Self {
         Default::default()
     }
 
     /// Adds a [Waker] to the list, storing it in [WakerSlot], which
-    /// is then linked into the [WakerList]. If `slot` already
-    /// contains a `Waker`, it is replaced, and the old Waker is
+    /// is then linked into the [WakerList]. If the slot already
+    /// contains a `Waker`, it is replaced, and the old `Waker` is
     /// dropped.
     pub fn link(self: Pin<&mut Self>, slot: Pin<&mut WakerSlot>, waker: Waker) {
         unsafe {
@@ -297,7 +307,7 @@ impl ExtractedWakers {
 }
 
 /// A [Future]'s waker registration slot. Holds at most one pending
-/// [Waker], which is stored in the slot.
+/// [Waker], which is stored inline within the slot.
 ///
 /// See [WakerList::link] and [WakerList::unlink] for use.
 ///
@@ -375,14 +385,19 @@ impl Drop for WakerSlot {
 }
 
 impl WakerSlot {
-    /// Returns an empty slot.
+    /// Constructs an empty slot.
     pub fn new() -> WakerSlot {
         Default::default()
     }
 
-    /// Returns whether this slot is linked into the [WakerList] (and
-    /// therefore has a waker).
-    /// TODO: document the race
+    /// Whether this slot contains a [Waker] and is linked into the
+    /// [WakerList].
+    ///
+    /// NOTE: `is_linked` can be called without holding a reference to
+    /// a [WakerList]. That is, `is_linked` can be called concurrently
+    /// with [WakerList::link] or [WakerList::unlink]. The function
+    /// exists to avoid needing to acquire any `WakerList` mutex in
+    /// order to unlink from `Drop`.
     pub fn is_linked(&self) -> bool {
         !self.list.load(Ordering::Acquire).is_null()
     }
