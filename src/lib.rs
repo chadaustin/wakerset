@@ -181,7 +181,8 @@ impl WakerList {
             // SAFETY: If linked, the slot holds a waker.
             // SAFETY: We will not move the slot.
             unsafe {
-                *slot.get_unchecked_mut().waker.assume_init_mut().get_mut() = waker;
+                *slot.get_unchecked_mut().waker.assume_init_mut().get_mut() =
+                    waker;
             }
         } else {
             // SAFETY: Pinning holds. Nothing is moved.
