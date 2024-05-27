@@ -278,7 +278,7 @@ impl WakerList {
     /// ```rust,ignore
     /// let mut wakers = my_pinned_waker_list.extract_some_wakers();
     /// drop(my_pinned_waker_list); // release lock
-    /// while wakers.notify_all() {
+    /// while wakers.wake_all() {
     ///   wakers.extract_more(get_my_pinned_waker_list_again());
     /// }
     /// ```
@@ -382,7 +382,7 @@ impl WakerList {
 /// ```rust,ignore
 /// let mut wakers = my_pinned_waker_list.extract_some_wakers();
 /// drop(my_pinned_waker_list); // release lock
-/// while wakers.notify_all() {
+/// while wakers.wake_all() {
 ///   wakers.extract_more(get_my_pinned_waker_list_again());
 /// }
 /// ```
@@ -396,7 +396,7 @@ pub struct ExtractedWakers {
 
 impl ExtractedWakers {
     // TODO: document must release the lock before invoking wakers
-    pub fn notify_all(&mut self) -> bool {
+    pub fn wake_all(&mut self) -> bool {
         // Generated code has no memcpy with drain(..).
         for waker in self.wakers.drain(..) {
             waker.wake();
@@ -406,11 +406,11 @@ impl ExtractedWakers {
 
     // TODO: document that we must be careful to use this on the same list
     pub fn extract_more(&mut self, list: Pin<&mut WakerList>) {
-        assert_eq!(0, self.wakers.len(), "call notify_all before extract_more");
+        assert_eq!(0, self.wakers.len(), "call wake_all before extract_more");
         if !list.extract_impl(
             &mut self.wakers,
             self.next_generation.expect(
-                "extract_more must only be called if notify_all returns true",
+                "extract_more must only be called if wake_all returns true",
             ),
         ) {
             self.next_generation = None;

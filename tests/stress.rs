@@ -45,7 +45,7 @@ impl DS {
         *inner.as_mut().project().count += 1;
         let mut wakers = inner.as_mut().project().waiters.extract_some_wakers();
         drop(inner);
-        while wakers.notify_all() {
+        while wakers.wake_all() {
             let mut inner = self.0.as_ref().lock();
             wakers.extract_more(inner.as_mut().project().waiters);
         }

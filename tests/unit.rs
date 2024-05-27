@@ -62,19 +62,19 @@ fn count_task_wakes() {
 }
 
 #[test]
-fn link_and_notify_all() {
+fn link_and_wake_all() {
     let task = Task::new();
 
     let mut list = pin!(WakerList::new());
     let slot = pin!(WakerSlot::new());
     list.as_mut().link(slot, task.waker());
-    assert!(!list.extract_some_wakers().notify_all());
+    assert!(!list.extract_some_wakers().wake_all());
 
     assert_eq!(1, task.wake_count());
 }
 
 #[test]
-fn link_and_notify_all_two_tasks() {
+fn link_and_wake_all_two_tasks() {
     let task = Task::new();
 
     let mut list = pin!(WakerList::new());
@@ -82,7 +82,7 @@ fn link_and_notify_all_two_tasks() {
     let slot2 = pin!(WakerSlot::new());
     list.as_mut().link(slot1, task.waker());
     list.as_mut().link(slot2, task.waker());
-    assert!(!list.extract_some_wakers().notify_all());
+    assert!(!list.extract_some_wakers().wake_all());
 
     assert_eq!(2, task.wake_count());
 }
@@ -99,7 +99,7 @@ fn unlink() {
     list.as_mut().unlink(slot1.as_mut());
     assert!(!slot1.is_linked());
 
-    assert!(!list.extract_some_wakers().notify_all());
+    assert!(!list.extract_some_wakers().wake_all());
     assert_eq!(0, task.wake_count());
 }
 
@@ -115,13 +115,13 @@ fn unlink_and_relink() {
     list.as_mut().unlink(slot1.as_mut());
     assert!(!slot1.is_linked());
 
-    assert!(!list.as_mut().extract_some_wakers().notify_all());
+    assert!(!list.as_mut().extract_some_wakers().wake_all());
     assert_eq!(0, task.wake_count());
 
     list.as_mut().link(slot1.as_mut(), task.waker());
     assert!(slot1.is_linked());
 
-    assert!(!list.extract_some_wakers().notify_all());
+    assert!(!list.extract_some_wakers().wake_all());
     assert_eq!(1, task.wake_count());
 }
 
@@ -207,7 +207,7 @@ fn second_link_replaces_waker() {
     list.as_mut().link(slot.as_mut(), task1.waker());
     list.as_mut().link(slot.as_mut(), task2.waker());
 
-    assert!(!list.as_mut().extract_some_wakers().notify_all());
+    assert!(!list.as_mut().extract_some_wakers().wake_all());
     assert_eq!(0, task1.wake_count());
     assert_eq!(1, task2.wake_count());
 }
@@ -240,7 +240,7 @@ fn just_full_wakers_needs_no_continue() {
     list.as_mut().link(slot7.as_mut(), the_task.waker());
 
     // There are not 8, so no need to continue.
-    assert!(!list.as_mut().extract_some_wakers().notify_all());
+    assert!(!list.as_mut().extract_some_wakers().wake_all());
     assert_eq!(7, the_task.wake_count());
 }
 
@@ -275,10 +275,10 @@ fn full_wakers_needs_continue() {
     list.as_mut().link(slot8.as_mut(), the_task.waker());
 
     // There are 8, so we need a second call.
-    assert!(list.as_mut().extract_some_wakers().notify_all());
+    assert!(list.as_mut().extract_some_wakers().wake_all());
     assert_eq!(7, the_task.wake_count());
 
-    assert!(!list.as_mut().extract_some_wakers().notify_all());
+    assert!(!list.as_mut().extract_some_wakers().wake_all());
     assert_eq!(8, the_task.wake_count());
 }
 
@@ -314,7 +314,7 @@ fn only_extract_wakers_since_beginning_of_extraction() {
 
     // There are 8, so we need a second call.
     let mut wakers = list.as_mut().extract_some_wakers();
-    assert!(wakers.notify_all());
+    assert!(wakers.wake_all());
     assert_eq!(7, the_task.wake_count());
 
     list.as_mut().link(slot1.as_mut(), the_task.waker());
@@ -331,12 +331,12 @@ fn only_extract_wakers_since_beginning_of_extraction() {
      */
 
     wakers.extract_more(list.as_mut());
-    assert!(!wakers.notify_all());
+    assert!(!wakers.wake_all());
     assert_eq!(8, the_task.wake_count());
 
     // Get the remaining half.
     let mut wakers = list.as_mut().extract_some_wakers();
-    assert!(!wakers.notify_all());
+    assert!(!wakers.wake_all());
     assert_eq!(12, the_task.wake_count());
 }
 
