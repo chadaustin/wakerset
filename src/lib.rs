@@ -120,10 +120,32 @@ impl Pointers {
     }
 }
 
+/// To avoid possible starvation, we limit wakers pulled from the
+/// [WakerList] up to a generation count. NonZero to allow
+/// `Option<Generation>`.
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
+#[repr(transparent)]
+struct Generation(core::num::NonZeroU64);
+
+impl Default for Generation {
+    fn default() -> Self {
+        Generation(core::num::NonZeroU64::MIN)
+    }
+}
+
+impl Generation {
+    /// Returns the previous value.
+    fn bump(&mut self) -> Self {
+        let c = *self;
+        self.0 = self.0.checked_add(1).expect("Generation cannot overflow");
+        c
+    }
+}
+
 /// List of pending [Waker]s.
 ///
 /// Does not allocate: the wakers themselves are stored in
-/// [WakerSlot]. Only two pointers in size.
+/// [WakerSlot]. Two pointers and a u64 generation counter in size.
 ///
 /// <div class="warning">
 ///
@@ -140,6 +162,7 @@ pub struct WakerList {
     // the pointers are null and movable. On first pinned use, we know
     // it will never be moved again, so they become self-referential.
     pointers: Pointers,
+    generation: Generation,
 }
 
 unsafe impl Send for WakerList {}
@@ -175,31 +198,40 @@ impl WakerList {
     /// is then linked into the [WakerList]. If the slot already
     /// contains a `Waker`, it is replaced, and the old `Waker` is
     /// dropped.
-    pub fn link(self: Pin<&mut Self>, slot: Pin<&mut WakerSlot>, waker: Waker) {
-        // No acquire fence is required: the list is locked.
-        if slot.as_ref().is_linked_locked() {
-            // SAFETY: If linked, the slot holds a waker.
-            // SAFETY: We will not move the slot.
-            unsafe {
-                *slot.get_unchecked_mut().waker.assume_init_mut().get_mut() =
-                    waker;
-            }
-        } else {
-            // SAFETY: Pinning holds. Nothing is moved.
-            // SAFETY: No references formed to slots we do not own.
-            unsafe {
-                let selfp = self.get_unchecked_mut() as *mut Self;
-                let slotp = slot.get_unchecked_mut() as *mut WakerSlot;
+    pub fn link(
+        mut self: Pin<&mut Self>,
+        slot: Pin<&mut WakerSlot>,
+        waker: Waker,
+    ) {
+        unsafe {
+            let generation = self.as_mut().get_unchecked_mut().generation;
 
-                Pointers::link_back(
-                    addr_of_mut!((*selfp).pointers),
-                    UnsafeCell::raw_get(addr_of!((*slotp).pointers)),
-                );
-                addr_of_mut!((*slotp).waker)
-                    .write(MaybeUninit::new(UnsafeCell::new(waker)));
-                // Allow other threads to observe that we are linked.
-                (*slotp).list.store(selfp, Ordering::Release);
+            // SAFETY: Both list and slot are pinned and we will not move them.
+            let selfp = self.get_unchecked_mut() as *mut Self;
+            let slotp = slot.get_unchecked_mut() as *mut WakerSlot;
+
+            // No acquire fence is required: the list is locked.
+            if (*slotp).is_linked_locked() {
+                // SAFETY: If linked, the slot holds a waker.
+                // We must unlink here so we can move to the back of
+                // the list in case the generation changed.
+                Pointers::unlink(UnsafeCell::raw_get(addr_of!(
+                    (*slotp).pointers
+                )));
+                (*slotp).waker.assume_init_drop();
+                // Do not unset the list pointer because it will be set below.
             }
+
+            // SAFETY: No references formed to slots we do not own.
+            Pointers::link_back(
+                addr_of_mut!((*selfp).pointers),
+                UnsafeCell::raw_get(addr_of!((*slotp).pointers)),
+            );
+            addr_of_mut!((*slotp).waker).write(MaybeUninit::new(
+                UnsafeCell::new(SlotStorage { waker, generation }),
+            ));
+            // Allow other threads to observe that we are linked.
+            (*slotp).list.store(selfp, Ordering::Release);
         }
     }
 
@@ -226,11 +258,26 @@ impl WakerList {
         }
     }
 
-    pub fn extract_some_wakers(self: Pin<&mut Self>) -> ExtractedWakers {
+    pub fn extract_some_wakers(mut self: Pin<&mut Self>) -> ExtractedWakers {
         let mut wakers = ArrayVec::new();
+        let current_generation =
+            unsafe { self.as_mut().get_unchecked_mut().generation.bump() };
+        let more = self.extract_impl(&mut wakers, current_generation);
+        ExtractedWakers {
+            wakers,
+            next_generation: if more { Some(current_generation) } else { None },
+        }
+    }
+
+    fn extract_impl(
+        self: Pin<&mut Self>,
+        wakers: &mut ArrayVec<Waker, EXTRACT_CAPACITY>,
+        generation: Generation,
+    ) -> bool {
         let mut more = false;
 
         // SAFETY: self is pinned
+        // SAFETY: more
         unsafe {
             let selfp = self.get_unchecked_mut() as *mut Self;
             let listp = addr_of_mut!((*selfp).pointers);
@@ -240,7 +287,7 @@ impl WakerList {
             // If null, then not cyclic, and we can just return.
             if p.is_null() {
                 assert!(addr_of_mut!((*listp).prev).read().is_null());
-                return ExtractedWakers::default();
+                return false;
             }
 
             loop {
@@ -249,21 +296,34 @@ impl WakerList {
                     assert_eq!(addr_of_mut!((*listp).prev).read(), listp);
                     break;
                 }
+
+                // Cast the pointer to its outer container. We cannot
+                // form a reference to the WakerSlot.
+                let slot = p
+                    .byte_sub(offset_of!(WakerSlot, pointers))
+                    .cast::<WakerSlot>();
+
+                // Check generation.
+                let slot_generation = ptr::addr_of!((*slot).waker)
+                    .read()
+                    .assume_init_mut()
+                    .get_mut()
+                    .generation;
+                if generation < slot_generation {
+                    break;
+                }
+
                 if wakers.is_full() {
                     // We checked p == listp above, so we know there are more.
                     more = true;
                     break;
                 }
 
-                let slot = p
-                    .byte_sub(offset_of!(WakerSlot, pointers))
-                    .cast::<WakerSlot>();
-
                 let waker = ptr::addr_of!((*slot).waker)
                     .read()
                     .assume_init_read()
                     .into_inner();
-                wakers.push(waker);
+                wakers.push(waker.waker);
 
                 let next = addr_of_mut!((*p).next).read();
                 let prev = addr_of_mut!((*p).prev).read();
@@ -282,35 +342,41 @@ impl WakerList {
             }
         };
 
-        ExtractedWakers { wakers, more }
+        more
     }
 }
 
 /// List of [Waker] extracted from [WakerList] so that [Waker::wake]
 /// can be called outside of any mutex protecting [WakerList].
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ExtractedWakers {
     wakers: ArrayVec<Waker, EXTRACT_CAPACITY>,
-    more: bool,
-}
-
-impl Default for ExtractedWakers {
-    fn default() -> Self {
-        Self {
-            wakers: ArrayVec::new(),
-            more: false,
-        }
-    }
+    // None: no more
+    // Some: the generation we're pulling
+    next_generation: Option<Generation>,
 }
 
 impl ExtractedWakers {
     // TODO: document must release the lock before invoking wakers
-    pub fn notify_all(mut self) -> bool {
+    pub fn notify_all(&mut self) -> bool {
         // Generated code has no memcpy with drain(..).
         for waker in self.wakers.drain(..) {
             waker.wake();
         }
-        self.more
+        self.next_generation.is_some()
+    }
+
+    // TODO: document that we must be careful to use this on the same list
+    pub fn extract_more(&mut self, list: Pin<&mut WakerList>) {
+        assert_eq!(0, self.wakers.len(), "call notify_all before extract_more");
+        if !list.extract_impl(
+            &mut self.wakers,
+            self.next_generation.expect(
+                "extract_more must only be called if notify_all returns true",
+            ),
+        ) {
+            self.next_generation = None;
+        }
     }
 }
 
@@ -354,7 +420,14 @@ pub struct WakerSlot {
     pointers: UnsafeCell<Pointers>,
     // MaybeUninit = only init iff linked
     // UnsafeCell = may be mutated through shared references
-    waker: MaybeUninit<UnsafeCell<Waker>>,
+    waker: MaybeUninit<UnsafeCell<SlotStorage>>,
+}
+
+// MIRI: This part of WakerSlot that can have references formed to it
+// by the WakerList.
+struct SlotStorage {
+    waker: Waker,
+    generation: Generation,
 }
 
 unsafe impl Send for WakerSlot {}

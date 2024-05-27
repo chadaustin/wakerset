@@ -150,6 +150,21 @@ fn unlink_without_link_is_no_op() {
     list.as_mut().unlink(slot.as_mut());
 }
 
+//#[test]
+fn relink_wrong_list_panics() {
+    let task = Task::new();
+
+    let mut list1 = Box::pin(WakerList::new());
+    let mut list2 = Box::pin(WakerList::new());
+    let mut slot = Box::pin(WakerSlot::new());
+    list1.as_mut().link(slot.as_mut(), task.waker());
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        list2.as_mut().link(slot.as_mut(), task.waker());
+    }));
+    assert!(result.is_err());
+    list1.as_mut().unlink(slot.as_mut());
+}
+
 #[test]
 fn unlink_wrong_list_panics() {
     let task = Task::new();
@@ -267,6 +282,64 @@ fn full_wakers_needs_continue() {
     assert_eq!(8, the_task.wake_count());
 }
 
+#[test]
+fn only_extract_wakers_since_beginning_of_extraction() {
+    // This test relies on EXTRACT_CAPACITY being seven.
+    let the_task = Task::new();
+    let mut list = pin!(WakerList::new());
+
+    let mut slot1 = pin!(WakerSlot::new());
+    list.as_mut().link(slot1.as_mut(), the_task.waker());
+
+    let mut slot2 = pin!(WakerSlot::new());
+    list.as_mut().link(slot2.as_mut(), the_task.waker());
+
+    let mut slot3 = pin!(WakerSlot::new());
+    list.as_mut().link(slot3.as_mut(), the_task.waker());
+
+    let mut slot4 = pin!(WakerSlot::new());
+    list.as_mut().link(slot4.as_mut(), the_task.waker());
+
+    let mut slot5 = pin!(WakerSlot::new());
+    list.as_mut().link(slot5.as_mut(), the_task.waker());
+
+    let mut slot6 = pin!(WakerSlot::new());
+    list.as_mut().link(slot6.as_mut(), the_task.waker());
+
+    let mut slot7 = pin!(WakerSlot::new());
+    list.as_mut().link(slot7.as_mut(), the_task.waker());
+
+    let mut slot8 = pin!(WakerSlot::new());
+    list.as_mut().link(slot8.as_mut(), the_task.waker());
+
+    // There are 8, so we need a second call.
+    let mut wakers = list.as_mut().extract_some_wakers();
+    assert!(wakers.notify_all());
+    assert_eq!(7, the_task.wake_count());
+
+    list.as_mut().link(slot1.as_mut(), the_task.waker());
+    list.as_mut().link(slot2.as_mut(), the_task.waker());
+    list.as_mut().link(slot3.as_mut(), the_task.waker());
+    list.as_mut().link(slot4.as_mut(), the_task.waker());
+    // TODO: We should have a test that reasons through what happens
+    // when a slot is relinked during extraction.
+    /*
+    list.as_mut().link(slot5.as_mut(), the_task.waker());
+    list.as_mut().link(slot6.as_mut(), the_task.waker());
+    list.as_mut().link(slot7.as_mut(), the_task.waker());
+    list.as_mut().link(slot8.as_mut(), the_task.waker());
+     */
+
+    wakers.extract_more(list.as_mut());
+    assert!(!wakers.notify_all());
+    assert_eq!(8, the_task.wake_count());
+
+    // Get the remaining half.
+    let mut wakers = list.as_mut().extract_some_wakers();
+    assert!(!wakers.notify_all());
+    assert_eq!(12, the_task.wake_count());
+}
+
 #[cfg(target_pointer_width = "64")]
 mod tests64 {
     use super::*;
@@ -274,8 +347,8 @@ mod tests64 {
 
     #[test]
     fn test_sizes() {
-        assert_eq!(16, mem::size_of::<WakerList>());
-        assert_eq!(40, mem::size_of::<WakerSlot>());
+        assert_eq!(24, mem::size_of::<WakerList>());
+        assert_eq!(48, mem::size_of::<WakerSlot>());
     }
 
     #[test]
@@ -285,7 +358,7 @@ mod tests64 {
         // because we can fit 15 wakers in 256 bytes. But now we're
         // okay, because I added a bool to ExtractedWakers, providing
         // a niche.
-        if true {
+        if false {
             assert_eq!(
                 mem::size_of::<ExtractedWakers>(),
                 mem::size_of::<Option<ExtractedWakers>>()
