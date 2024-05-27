@@ -395,7 +395,10 @@ pub struct ExtractedWakers {
 }
 
 impl ExtractedWakers {
-    // TODO: document must release the lock before invoking wakers
+    /// Calls [Waker::wake] on all extracted wakers. Returns true if
+    /// more wakers should be extracted with [ExtractedWakers::extract_more].
+    ///
+    /// To avoid deadlocks, avoid calling with any locks held.
     pub fn wake_all(&mut self) -> bool {
         // Generated code has no memcpy with drain(..).
         for waker in self.wakers.drain(..) {
@@ -404,7 +407,10 @@ impl ExtractedWakers {
         self.next_generation.is_some()
     }
 
-    // TODO: document that we must be careful to use this on the same list
+    /// Refills the array of extracted wakers.
+    /// Panics if either:
+    /// - `wake_all` returned false.
+    /// - `extract_more` is called on a different list than previously.
     pub fn extract_more(&mut self, list: Pin<&mut WakerList>) {
         assert_eq!(0, self.wakers.len(), "call wake_all before extract_more");
         if !list.extract_impl(
