@@ -150,7 +150,7 @@ fn unlink_without_link_is_no_op() {
     list.as_mut().unlink(slot.as_mut());
 }
 
-//#[test]
+#[test]
 fn relink_wrong_list_panics() {
     let task = Task::new();
 

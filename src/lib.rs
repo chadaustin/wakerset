@@ -19,6 +19,7 @@ use core::pin::Pin;
 use core::ptr;
 use core::ptr::addr_of;
 use core::ptr::addr_of_mut;
+use core::ptr::NonNull;
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering;
 use core::task::Waker;
@@ -203,6 +204,7 @@ impl WakerList {
         slot: Pin<&mut WakerSlot>,
         waker: Waker,
     ) {
+        // SAFETY: TODO ...
         unsafe {
             let generation = self.as_mut().get_unchecked_mut().generation;
 
@@ -211,7 +213,13 @@ impl WakerList {
             let slotp = slot.get_unchecked_mut() as *mut WakerSlot;
 
             // No acquire fence is required: the list is locked.
-            if (*slotp).is_linked_locked() {
+            if let Some(slot_list) = (*slotp).is_linked_locked() {
+                assert_eq!(
+                    selfp,
+                    slot_list.as_ptr(),
+                    "relinking a WakerSlot must use the same list"
+                );
+
                 // SAFETY: If linked, the slot holds a waker.
                 // We must unlink here so we can move to the back of
                 // the list in case the generation changed.
@@ -483,9 +491,9 @@ impl WakerSlot {
         !self.list.load(Ordering::Acquire).is_null()
     }
 
-    // Private API for use when WakerList is locked. Avoids an Acquire
-    // fence.
-    pub fn is_linked_locked(&self) -> bool {
-        !self.list.load(Ordering::Relaxed).is_null()
+    /// Private API for use when WakerList is locked. Avoids an Acquire
+    /// fence. Returns the owning list if linked.
+    fn is_linked_locked(&self) -> Option<NonNull<WakerList>> {
+        NonNull::new(self.list.load(Ordering::Relaxed))
     }
 }
