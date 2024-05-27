@@ -266,6 +266,27 @@ impl WakerList {
         }
     }
 
+    /// Extracts and unlinks a finite but unspecified number of
+    /// [Waker]s from the list. [It is important to wake wakers while
+    /// not holding
+    /// locks](https://users.rust-lang.org/t/should-locks-be-dropped-before-calling-waker-wake/53057).
+    ///
+    /// Because this library is no_std, returning all wakers in one
+    /// call is not possible. Extract the remaining with
+    /// [ExtractedWakers::extract_more] in a loop like:
+    ///
+    /// ```rust,ignore
+    /// let mut wakers = my_pinned_waker_list.extract_some_wakers();
+    /// drop(my_pinned_waker_list); // release lock
+    /// while wakers.notify_all() {
+    ///   wakers.extract_more(get_my_pinned_waker_list_again());
+    /// }
+    /// ```
+    ///
+    /// To avoid looping forever if contending threads are linking new
+    /// wakers in parallel, which would starve the unblocking thread,
+    /// `WakerList` tracks insertion order and only returns wakers
+    /// that were linked before `extract_some_wakers` was called.
     pub fn extract_some_wakers(mut self: Pin<&mut Self>) -> ExtractedWakers {
         let mut wakers = ArrayVec::new();
         let current_generation =
@@ -354,8 +375,17 @@ impl WakerList {
     }
 }
 
-/// List of [Waker] extracted from [WakerList] so that [Waker::wake]
-/// can be called outside of any mutex protecting [WakerList].
+/// List of [Waker]s extracted from [WakerList] so that [Waker::wake]
+/// can be called outside of any mutex protecting the `WakerList`.
+///
+/// Intended to be used as such:
+/// ```rust,ignore
+/// let mut wakers = my_pinned_waker_list.extract_some_wakers();
+/// drop(my_pinned_waker_list); // release lock
+/// while wakers.notify_all() {
+///   wakers.extract_more(get_my_pinned_waker_list_again());
+/// }
+/// ```
 #[derive(Debug, Default)]
 pub struct ExtractedWakers {
     wakers: ArrayVec<Waker, EXTRACT_CAPACITY>,
