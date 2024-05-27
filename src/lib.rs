@@ -81,7 +81,8 @@ impl Pointers {
 
     /// Is empty when either null or self-linked.
     fn is_empty(&self) -> bool {
-        // TODO: Is forming a reference here compatible with MIRI?
+        // Forming a reference here is okay because provenance carries
+        // from the `self` reference.
         self.next.is_null() || (self as *const Pointers == self.next)
     }
 
@@ -106,7 +107,8 @@ impl Pointers {
     /// Link a value to the back of the list. The value must be
     /// unlinked.
     unsafe fn link_back(list: *mut Pointers, node: *mut Pointers) {
-        // SAFETY: TODO
+        // SAFETY: both pointers are pinned.
+        // SAFETY: references are not formed.
         unsafe {
             Pointers::ensure_cyclic(list);
             let nodenextp = addr_of_mut!((*node).next);
@@ -204,7 +206,7 @@ impl WakerList {
         slot: Pin<&mut WakerSlot>,
         waker: Waker,
     ) {
-        // SAFETY: TODO ...
+        // SAFETY: Neither list nor slot are moved.
         unsafe {
             let generation = self.as_mut().get_unchecked_mut().generation;
 
@@ -254,7 +256,7 @@ impl WakerList {
             // the list mutex.
             return;
         }
-        // SAFETY: TODO ...
+        // SAFETY: slot's provenance carries through references below.
         unsafe {
             let list = self.get_unchecked_mut() as *mut _;
             assert_eq!(list, slot_list, "slot must be unlinked from same list");
