@@ -45,7 +45,7 @@ const EXTRACT_CAPACITY: usize = 7;
 struct Pointers {
     next: *mut Pointers,
     prev: *mut Pointers,
-    pinned: PhantomPinned,
+    _pinned: PhantomPinned,
 }
 
 impl Default for Pointers {
@@ -53,7 +53,7 @@ impl Default for Pointers {
         Self {
             next: ptr::null_mut(),
             prev: ptr::null_mut(),
-            pinned: PhantomPinned,
+            _pinned: PhantomPinned,
         }
     }
 }
