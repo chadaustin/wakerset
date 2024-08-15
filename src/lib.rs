@@ -40,7 +40,6 @@ const EXTRACT_CAPACITY: usize = 7;
 /// Null is the default, because it's movable. Once pinned, we know it
 /// will never be moved again, so it's made cyclic, where `next` and
 /// `prev` point to self.
-#[repr(C)]
 #[derive(Copy, Clone, Debug)]
 struct Pointers {
     next: *mut Pointers,
