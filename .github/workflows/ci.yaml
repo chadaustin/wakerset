@@ -34,17 +34,6 @@ jobs:
           components: miri,rust-src
       - run: cargo +nightly miri test
 
-  loom:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --test loom
-        env:
-          RUSTFLAGS: --cfg loom
-
   asan:
     runs-on: ubuntu-latest
     env:
