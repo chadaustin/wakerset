@@ -289,14 +289,21 @@ impl WakerList {
     /// `WakerList` tracks insertion order and only returns wakers
     /// that were linked before `extract_some_wakers` was called.
     pub fn extract_some_wakers(mut self: Pin<&mut Self>) -> ExtractedWakers {
-        let mut wakers = ArrayVec::new();
+        // Try to avoid an unnecessary memcpy but Rust is not good at
+        // RVO.
+        // https://github.com/rust-lang/rust/issues/116541
+        // https://gcc.godbolt.org/z/4shqqWf76
+        let mut rv = ExtractedWakers {
+            wakers: ArrayVec::new(),
+            next_generation: None,
+        };
         let current_generation =
             unsafe { self.as_mut().get_unchecked_mut().generation.bump() };
-        let more = self.extract_impl(&mut wakers, current_generation);
-        ExtractedWakers {
-            wakers,
-            next_generation: if more { Some(current_generation) } else { None },
+        if self.extract_impl(&mut rv.wakers, current_generation) {
+            rv.next_generation = Some(current_generation);
         }
+
+        rv
     }
 
     fn extract_impl(

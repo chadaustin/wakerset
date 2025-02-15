@@ -22,3 +22,8 @@ static_assertions = "1.1"
 tokio = { version = "1.37", features = ["rt-multi-thread"] }
 pinned-mutex = "0.2"
 pin-project = "1"
+divan = "0.1.16"
+
+[[bench]]
+name = "bench"
+harness = false
