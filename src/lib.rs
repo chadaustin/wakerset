@@ -136,6 +136,10 @@ impl Generation {
     }
 }
 
+/// Opaque token returned from [WakerList::begin_extraction].
+///
+/// Used to prevent newly-linked wakers from starving the
+/// [WakerList::extract_some_wakers] loop.
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
 pub struct ExtractionRound(Generation);
