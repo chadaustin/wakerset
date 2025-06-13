@@ -8,6 +8,7 @@ use pin_project::pin_project;
 use pin_project::pinned_drop;
 use pinned_mutex::std::PinnedMutex;
 use std::sync::Arc;
+use wakerset::ExtractedWakers;
 use wakerset::WakerList;
 use wakerset::WakerSlot;
 
@@ -43,11 +44,20 @@ impl DS {
             return false;
         }
         *inner.as_mut().project().count += 1;
-        let mut wakers = inner.as_mut().project().waiters.extract_some_wakers();
-        drop(inner);
-        while wakers.wake_all() {
-            let mut inner = self.0.as_ref().lock();
-            wakers.extract_more(inner.as_mut().project().waiters);
+        let round = inner.as_mut().project().waiters.begin_extraction();
+        let mut wakers = ExtractedWakers::new();
+        loop {
+            let more = inner
+                .as_mut()
+                .project()
+                .waiters
+                .extract_some_wakers(round, &mut wakers);
+            drop(inner);
+            wakers.wake_all();
+            if !more {
+                break;
+            }
+            inner = self.0.as_ref().lock();
         }
         true
     }

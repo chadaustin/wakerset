@@ -1,10 +1,11 @@
-use divan::Bencher;
 use divan::black_box;
-use std::sync::atomic::Ordering;
+use divan::Bencher;
 use std::pin::pin;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::task::Waker;
+use wakerset::ExtractedWakers;
 use wakerset::WakerList;
 use wakerset::WakerSlot;
 
@@ -41,16 +42,15 @@ fn main() {
 
 #[divan::bench]
 fn extract_some_wakers(bencher: Bencher) {
-    let mut wakers = black_box(WakerList::new());
-    let mut wakers = pin!(wakers);
+    let mut wl = pin!(black_box(WakerList::new()));
     let slot = pin!(WakerSlot::new());
     let task = Task::new();
-    wakers.as_mut().link(slot, task.waker());
-    let mut wakers = black_box(wakers);
+    wl.as_mut().link(slot, task.waker());
     bencher.bench_local(|| {
-        let mut w = wakers.as_mut().extract_some_wakers();
-        while w.wake_all() {
-            w.extract_more(wakers.as_mut());
+        let round = wl.as_mut().begin_extraction();
+        let mut wakers = ExtractedWakers::new();
+        while wl.as_mut().extract_some_wakers(round, &mut wakers) {
+            wakers.wake_all();
         }
     });
 }

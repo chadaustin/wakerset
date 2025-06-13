@@ -9,6 +9,7 @@
 //! for one [Waker].
 
 #![no_std]
+#![allow(clippy::ptr_eq)]
 
 use arrayvec::ArrayVec;
 use core::cell::UnsafeCell;
@@ -123,26 +124,21 @@ impl Pointers {
 }
 
 /// To avoid possible starvation, we limit wakers pulled from the
-/// [WakerList] up to a generation count. NonZero to allow
-/// `Option<Generation>`.
-#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
+/// [WakerList] up to a generation count.
+#[derive(Copy, Clone, Debug, Default, PartialEq, PartialOrd)]
 #[repr(transparent)]
-struct Generation(core::num::NonZeroU64);
-
-impl Default for Generation {
-    fn default() -> Self {
-        Generation(core::num::NonZeroU64::MIN)
-    }
-}
+struct Generation(u64);
 
 impl Generation {
-    /// Returns the previous value.
-    fn bump(&mut self) -> Self {
-        let c = *self;
-        self.0 = self.0.checked_add(1).expect("Generation cannot overflow");
-        c
+    fn bump(&mut self) {
+        // Safety: Cannot overflow.
+        self.0 += 1;
     }
 }
+
+#[derive(Copy, Clone, Debug)]
+#[repr(transparent)]
+pub struct ExtractionRound(Generation);
 
 /// List of pending [Waker]s.
 ///
@@ -267,20 +263,35 @@ impl WakerList {
         }
     }
 
+    /// Begins a waker extraction epoch for use by
+    /// [WakerList::extract_some_wakers].
+    pub fn begin_extraction(mut self: Pin<&mut Self>) -> ExtractionRound {
+        let current = self.as_mut().generation;
+        // We could pin-project.
+        unsafe { self.get_unchecked_mut() }.generation.bump();
+        ExtractionRound(current)
+    }
+
     /// Extracts and unlinks a finite but unspecified number of
     /// [Waker]s from the list. [It is important to wake wakers while
     /// not holding
     /// locks](https://users.rust-lang.org/t/should-locks-be-dropped-before-calling-waker-wake/53057).
     ///
     /// Because this library is no_std, returning all wakers in one
-    /// call is not possible. Extract the remaining with
-    /// [ExtractedWakers::extract_more] in a loop like:
+    /// call is not possible. Extract and wake all wakers in a loop
+    /// like:
     ///
     /// ```rust,ignore
-    /// let mut wakers = my_pinned_waker_list.extract_some_wakers();
-    /// drop(my_pinned_waker_list); // release lock
-    /// while wakers.wake_all() {
-    ///   wakers.extract_more(get_my_pinned_waker_list_again());
+    /// let round = my_pinned_waker_list.begin_extraction();
+    /// let mut wakers = ExtractedWakers::new();
+    /// loop {
+    ///     let more = my_pinned_waker_list.extract_some_wakers(round, &mut wakers);
+    ///     drop(waker_list_lock);
+    ///     wakers.wake_all();
+    ///     if !more {
+    ///         break;
+    ///     }
+    ///     waker_list_lock = reacquire_waker_list_lock();
     /// }
     /// ```
     ///
@@ -288,29 +299,16 @@ impl WakerList {
     /// wakers in parallel, which would starve the unblocking thread,
     /// `WakerList` tracks insertion order and only returns wakers
     /// that were linked before `extract_some_wakers` was called.
-    pub fn extract_some_wakers(mut self: Pin<&mut Self>) -> ExtractedWakers {
-        // Try to avoid an unnecessary memcpy but Rust is not good at
-        // RVO.
-        // https://github.com/rust-lang/rust/issues/116541
-        // https://gcc.godbolt.org/z/4shqqWf76
-        let mut rv = ExtractedWakers {
-            wakers: ArrayVec::new(),
-            next_generation: None,
-        };
-        let current_generation =
-            unsafe { self.as_mut().get_unchecked_mut().generation.bump() };
-        if self.extract_impl(&mut rv.wakers, current_generation) {
-            rv.next_generation = Some(current_generation);
-        }
-
-        rv
-    }
-
-    fn extract_impl(
+    pub fn extract_some_wakers(
         self: Pin<&mut Self>,
-        wakers: &mut ArrayVec<Waker, EXTRACT_CAPACITY>,
-        generation: Generation,
+        round: ExtractionRound,
+        wakers: &mut ExtractedWakers,
     ) -> bool {
+        assert!(wakers.wakers.is_empty());
+
+        let wakers = &mut wakers.wakers;
+        let generation = round.0;
+
         let mut more = false;
 
         // SAFETY: self is pinned
@@ -397,37 +395,22 @@ impl WakerList {
 #[derive(Debug, Default)]
 pub struct ExtractedWakers {
     wakers: ArrayVec<Waker, EXTRACT_CAPACITY>,
-    // None: no more
-    // Some: the generation we're pulling
-    next_generation: Option<Generation>,
 }
 
 impl ExtractedWakers {
-    /// Calls [Waker::wake] on all extracted wakers. Returns true if
-    /// more wakers should be extracted with [ExtractedWakers::extract_more].
+    /// Returns an empty list of wakers. Intended for allocation on
+    /// the stack.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Calls [Waker::wake] on all extracted wakers.
     ///
     /// To avoid deadlocks, avoid calling with any locks held.
-    pub fn wake_all(&mut self) -> bool {
+    pub fn wake_all(&mut self) {
         // Generated code has no memcpy with drain(..).
         for waker in self.wakers.drain(..) {
             waker.wake();
-        }
-        self.next_generation.is_some()
-    }
-
-    /// Refills the array of extracted wakers.
-    /// Panics if either:
-    /// - `wake_all` returned false.
-    /// - `extract_more` is called on a different list than previously.
-    pub fn extract_more(&mut self, list: Pin<&mut WakerList>) {
-        assert_eq!(0, self.wakers.len(), "call wake_all before extract_more");
-        if !list.extract_impl(
-            &mut self.wakers,
-            self.next_generation.expect(
-                "extract_more must only be called if wake_all returns true",
-            ),
-        ) {
-            self.next_generation = None;
         }
     }
 }
