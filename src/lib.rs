@@ -69,7 +69,7 @@ impl Pointers {
             let nextp = addr_of_mut!((*node).next);
             let prevp = addr_of_mut!((*node).prev);
             if nextp.read().is_null() {
-                assert!(
+                debug_assert!(
                     prevp.read().is_null(),
                     "either both are null or neither are"
                 );
@@ -113,8 +113,8 @@ impl Pointers {
             Pointers::ensure_cyclic(list);
             let nodenextp = addr_of_mut!((*node).next);
             let nodeprevp = addr_of_mut!((*node).prev);
-            assert!(nodenextp.read().is_null());
-            assert!(nodeprevp.read().is_null());
+            debug_assert!(nodenextp.read().is_null());
+            debug_assert!(nodeprevp.read().is_null());
             nodenextp.write(list);
             nodeprevp.write(addr_of_mut!((*list).prev).read());
             addr_of_mut!((*(*list).prev).next).write(node);
