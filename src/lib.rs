@@ -325,14 +325,14 @@ impl WakerList {
 
             // If null, then not cyclic, and we can just return.
             if p.is_null() {
-                assert!(addr_of_mut!((*listp).prev).read().is_null());
+                debug_assert!(addr_of_mut!((*listp).prev).read().is_null());
                 return false;
             }
 
             loop {
                 if p == listp {
-                    assert_eq!(addr_of_mut!((*listp).next).read(), listp);
-                    assert_eq!(addr_of_mut!((*listp).prev).read(), listp);
+                    debug_assert_eq!(addr_of_mut!((*listp).next).read(), listp);
+                    debug_assert_eq!(addr_of_mut!((*listp).prev).read(), listp);
                     break;
                 }
 

@@ -41,12 +41,41 @@ fn main() {
 }
 
 #[divan::bench]
-fn extract_some_wakers(bencher: Bencher) {
+fn extract_wakers_never_linked(bencher: Bencher) {
     let mut wl = pin!(black_box(WakerList::new()));
-    let slot = pin!(WakerSlot::new());
-    let task = Task::new();
-    wl.as_mut().link(slot, task.waker());
     bencher.bench_local(|| {
+        let round = wl.as_mut().begin_extraction();
+        let mut wakers = ExtractedWakers::new();
+        while wl.as_mut().extract_some_wakers(round, &mut wakers) {
+            wakers.wake_all();
+        }
+    });
+}
+
+#[divan::bench]
+fn extract_wakers_one_unlinked_slot(bencher: Bencher) {
+    let mut wl = pin!(black_box(WakerList::new()));
+    let mut slot = pin!(WakerSlot::new());
+    let task = Task::new();
+    wl.as_mut().link(slot.as_mut(), task.waker());
+    wl.as_mut().unlink(slot);
+    bencher.bench_local(|| {
+        let round = wl.as_mut().begin_extraction();
+        let mut wakers = ExtractedWakers::new();
+        while wl.as_mut().extract_some_wakers(round, &mut wakers) {
+            wakers.wake_all();
+        }
+    });
+}
+
+#[divan::bench]
+fn extract_wakers_one_waker(bencher: Bencher) {
+    let mut wl = pin!(black_box(WakerList::new()));
+    let mut slot = pin!(WakerSlot::new());
+    let task = Task::new();
+    let waker = task.waker();
+    bencher.bench_local(|| {
+        wl.as_mut().link(slot.as_mut(), waker.clone());
         let round = wl.as_mut().begin_extraction();
         let mut wakers = ExtractedWakers::new();
         while wl.as_mut().extract_some_wakers(round, &mut wakers) {
