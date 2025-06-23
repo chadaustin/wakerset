@@ -67,16 +67,21 @@ impl Pointers {
         // MIRI: No references are formed.
         unsafe {
             let nextp = addr_of_mut!((*node).next);
-            let prevp = addr_of_mut!((*node).prev);
             if nextp.read().is_null() {
-                debug_assert!(
-                    prevp.read().is_null(),
-                    "either both are null or neither are"
-                );
-                nextp.write(node);
-                prevp.write(node);
+                Self::make_cyclic(node, nextp);
             }
         }
+    }
+
+    #[cold]
+    unsafe fn make_cyclic(node: *mut Pointers, nextp: *mut *mut Pointers) {
+        let prevp = addr_of_mut!((*node).prev);
+        assert!(
+            prevp.read().is_null(),
+            "either both are null or neither are"
+        );
+        nextp.write(node);
+        prevp.write(node);
     }
 
     /// Is empty when either null or self-linked.
