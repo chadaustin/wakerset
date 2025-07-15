@@ -195,6 +195,10 @@ impl Drop for WakerList {
     }
 }
 
+#[inline(always)]
+#[cold]
+fn cold() {}
+
 impl WakerList {
     /// Constructs an empty list.
     pub fn new() -> Self {
@@ -220,11 +224,22 @@ impl WakerList {
 
             // No acquire fence is required: the list is locked.
             if let Some(slot_list) = (*slotp).is_linked_locked() {
-                assert_eq!(
-                    selfp,
-                    slot_list.as_ptr(),
-                    "relinking a WakerSlot must use the same list"
-                );
+                // It is rare for hot code to link a second Waker over
+                // a first. Therefore, generate the happy path as
+                // consecutive instructions.
+                cold();
+
+                // rustc compiler bug or missed LLVM optimization, but
+                // if this is written as an assert, the function
+                // unconditionally allocates 64 bytes on the stack.
+                if selfp != slot_list.as_ptr() {
+                    #[inline(never)]
+                    #[cold]
+                    fn relink_panic() {
+                        panic!("relinking a WakerSlot must use the same list");
+                    }
+                    relink_panic();
+                }
 
                 // SAFETY: If linked, the slot holds a waker.
                 // We must unlink here so we can move to the back of
