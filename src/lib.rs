@@ -424,6 +424,7 @@ pub struct ExtractedWakers {
 impl ExtractedWakers {
     /// Returns an empty list of wakers. Intended for allocation on
     /// the stack.
+    #[inline(always)]
     pub fn new() -> Self {
         Self::default()
     }
