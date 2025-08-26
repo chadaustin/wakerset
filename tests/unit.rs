@@ -356,6 +356,25 @@ fn only_extract_wakers_since_beginning_of_extraction() {
     assert_eq!(12, the_task.wake_count());
 }
 
+#[test]
+fn extracted_wakers_is_empty() {
+    // This test relies on EXTRACT_CAPACITY being seven.
+    let the_task = Task::new();
+    let mut list = pin!(WakerList::new());
+
+    let mut wakers = ExtractedWakers::new();
+    let round = list.as_mut().begin_extraction();
+    assert!(!list.as_mut().extract_some_wakers(round, &mut wakers));
+    assert!(wakers.is_empty());
+
+    let mut slot1 = pin!(WakerSlot::new());
+    list.as_mut().link(slot1.as_mut(), the_task.waker());
+
+    let round = list.as_mut().begin_extraction();
+    assert!(!list.as_mut().extract_some_wakers(round, &mut wakers));
+    assert!(!wakers.is_empty());}
+
+
 #[cfg(target_pointer_width = "64")]
 mod tests64 {
     use super::*;

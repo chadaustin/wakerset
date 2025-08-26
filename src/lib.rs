@@ -429,6 +429,12 @@ impl ExtractedWakers {
         Self::default()
     }
 
+    /// Whether any wakers are held in this batch. If true,
+    /// then `wake_all` is a no-op.
+    pub fn is_empty(&self) -> bool {
+        self.wakers.is_empty()
+    }
+
     /// Calls [Waker::wake] on all extracted wakers.
     ///
     /// To avoid deadlocks, avoid calling with any locks held.
