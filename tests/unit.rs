@@ -89,6 +89,21 @@ fn link_and_wake_all() {
 }
 
 #[test]
+fn is_empty() {
+    let task = Task::new();
+
+    let mut list = pin!(WakerList::new());
+    assert!(list.as_mut().is_empty());
+
+    let slot = pin!(WakerSlot::new());
+    list.as_mut().link(slot, task.waker());
+    assert!(!list.as_mut().is_empty());
+    assert_eq!(1, wake_all(list.as_mut()));
+
+    assert!(list.as_mut().is_empty());
+}
+
+#[test]
 fn link_and_wake_all_two_tasks() {
     let task = Task::new();
 

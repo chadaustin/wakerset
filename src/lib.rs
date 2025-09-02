@@ -205,6 +205,13 @@ impl WakerList {
         Default::default()
     }
 
+    /// Returns true if no slots are linked into this list.
+    /// [WakerList::begin_extraction] and
+    /// [WakerList::extract_some_wakers] are no-ops if true.
+    pub fn is_empty(self: Pin<&mut Self>) -> bool {
+        self.pointers.is_empty()
+    }
+
     /// Adds a [Waker] to the list, storing it in [WakerSlot], which
     /// is then linked into the [WakerList]. If the slot already
     /// contains a `Waker`, it is replaced, and the old `Waker` is
